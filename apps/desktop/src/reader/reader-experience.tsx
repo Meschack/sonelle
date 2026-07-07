@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import {
   createAudioSettings,
+  createPrefetchingNarrationGateway,
   type AudioSettings,
   type SentenceNarration,
   type SentenceNarrationRequest
@@ -74,7 +75,7 @@ interface OpenBookOptions {
 
 export function ReaderExperience() {
   const repository = createBookRepository();
-  const narrationRepository = createNarrationRepository();
+  const narrationRepository = createPrefetchingNarrationGateway(createNarrationRepository());
   const dictionaryRepository = createDictionaryRepository();
   const audioCacheRepository = createAudioCacheRepository();
   const audioSettingsRepository = createAudioSettingsRepository();
@@ -230,18 +231,12 @@ export function ReaderExperience() {
     if (currentPlayback.status !== "playing" || sentence == null) return;
 
     const runId = ++narrationRun;
-    const request: SentenceNarrationRequest = {
-      bookId: currentReader.book.id,
-      chapterId: currentReader.chapter.id,
-      sentenceId: sentence.id,
-      sentenceIndex: sentence.index,
-      text: sentence.text
-    };
+    const request = createSentenceNarrationRequest(currentReader, sentence);
 
     setIsPreparingNarration(true);
     setNarrationNotice(null);
 
-    void playSentenceNarration(request, runId, currentReader.sentences.length);
+    void playSentenceNarration(request, runId, currentReader, currentPlayback.activeSentenceIndex);
 
     onCleanup(() => {
       narrationRun += 1;
@@ -412,12 +407,14 @@ export function ReaderExperience() {
     setNarrationNotice(null);
     setIsPreparingNarration(false);
     setSelectedWord(null);
+    narrationRepository.clearPrefetchedNarrations();
   };
 
   const playSentenceNarration = async (
     request: SentenceNarrationRequest,
     runId: number,
-    sentenceCount: number
+    currentReader: ReaderView,
+    activeSentenceIndex: number
   ) => {
     try {
       const narration = await narrationRepository.prepareSentenceAudio(request);
@@ -433,6 +430,8 @@ export function ReaderExperience() {
         return;
       }
 
+      prefetchNextSentenceNarration(currentReader, activeSentenceIndex, runId);
+
       if (narration.playbackMode === "html-audio" && narration.sourceUrl != null) {
         await playHtmlAudio(narration.sourceUrl, runId);
       } else {
@@ -441,7 +440,7 @@ export function ReaderExperience() {
 
       if (runId !== narrationRun) return;
       setPlayback((current) =>
-        finishSentencePlayback(current, sentenceCount, audioSettings().autoAdvance)
+        finishSentencePlayback(current, currentReader.sentences.length, audioSettings().autoAdvance)
       );
     } catch (error) {
       if (runId !== narrationRun) return;
@@ -483,6 +482,24 @@ export function ReaderExperience() {
         finish();
       }
     });
+
+  const prefetchNextSentenceNarration = (
+    currentReader: ReaderView,
+    activeSentenceIndex: number,
+    runId: number
+  ) => {
+    const nextSentence = currentReader.sentences[activeSentenceIndex + 1];
+    if (nextSentence == null) return;
+
+    const request = createSentenceNarrationRequest(currentReader, nextSentence);
+
+    void narrationRepository
+      .prefetchSentenceAudio(request)
+      .then(() => {
+        if (runId === narrationRun) void refreshAudioCacheStats();
+      })
+      .catch(() => undefined);
+  };
 
   const refreshLibrary = async () => {
     try {
@@ -527,6 +544,7 @@ export function ReaderExperience() {
 
   const clearAudioCache = async () => {
     try {
+      narrationRepository.clearPrefetchedNarrations();
       setAudioCacheStats(await audioCacheRepository.clear());
       setAudioCacheNotice("Prepared audio cleared.");
     } catch (error) {
@@ -1480,6 +1498,19 @@ function createSampleExport(
       updatedAt: new Date().toISOString()
     },
     bookmarks: currentBookmarks
+  };
+}
+
+function createSentenceNarrationRequest(
+  currentReader: ReaderView,
+  sentence: ReaderSentenceView
+): SentenceNarrationRequest {
+  return {
+    bookId: currentReader.book.id,
+    chapterId: currentReader.chapter.id,
+    sentenceId: sentence.id,
+    sentenceIndex: sentence.index,
+    text: sentence.text
   };
 }
 

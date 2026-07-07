@@ -6,7 +6,7 @@ Accepted.
 
 ## Decision
 
-Readex Next prepares and plays narration one sentence at a time.
+Readex Next plays narration one sentence at a time and prefetches upcoming sentence audio while the current sentence is playing.
 
 The renderer talks to a small `NarrationGateway` from `packages/audio`. The gateway exposes three actions:
 
@@ -18,6 +18,8 @@ The desktop app provides the real gateway through Tauri commands. Browser and te
 
 Native audio preparation caches sentence narration locally. The native layer prefers Piper, stores `sentence.wav`, and returns it as an audio data URL. Robotic system speech is not acceptable as normal narration; if no neural local voice is configured, Readex reports that narration needs attention.
 
+The renderer wraps the active gateway with a small bounded prefetch cache. When playback starts for a sentence, the next sentence begins preparing in the background so the handoff feels closer to continuous reading instead of isolated sentence clips.
+
 ## Why
 
 Sentence narration needs native capabilities, but reader UI should not know about subprocesses, cache paths, or installed speech tools.
@@ -27,6 +29,7 @@ This boundary keeps responsibilities clean:
 - `packages/audio` owns the narration contract and fake adapter.
 - Tauri commands own local process and cache access.
 - Reader UI owns playback intent, sentence highlighting, and friendly status text.
+- Reader UI owns prefetch timing, because it knows the current reading order.
 
 The fake adapter is intentionally deterministic so tests and fixture workflows do not depend on machine voices, codecs, or timing metadata.
 

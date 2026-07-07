@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   createAudioSettings,
+  createPrefetchingNarrationGateway,
   FakeNarrationGateway,
   estimateSentenceDurationSec,
   parseAudioSettings,
-  serializeAudioSettings
+  serializeAudioSettings,
+  type NarrationGateway,
+  type SentenceNarration,
+  type SentenceNarrationRequest
 } from "./index";
 
 describe("sentence narration", () => {
@@ -50,4 +54,67 @@ describe("sentence narration", () => {
       autoAdvance: false
     });
   });
+
+  it("reuses prefetched narration instead of preparing the same sentence twice", async () => {
+    const gateway = new CountingNarrationGateway();
+    const prefetching = createPrefetchingNarrationGateway(gateway);
+    const request = createRequest("sentence-1");
+
+    await prefetching.prefetchSentenceAudio(request);
+    const narration = await prefetching.prepareSentenceAudio(request);
+
+    expect(narration.sentenceId).toBe("sentence-1");
+    expect(gateway.prepareCount).toBe(1);
+  });
+
+  it("drops old prefetched narrations when the in-memory window is full", async () => {
+    const gateway = new CountingNarrationGateway();
+    const prefetching = createPrefetchingNarrationGateway(gateway, { maxEntries: 1 });
+    const first = createRequest("sentence-1");
+    const second = createRequest("sentence-2");
+
+    await prefetching.prefetchSentenceAudio(first);
+    await prefetching.prefetchSentenceAudio(second);
+    await prefetching.prepareSentenceAudio(first);
+
+    expect(gateway.prepareCount).toBe(3);
+  });
 });
+
+class CountingNarrationGateway implements NarrationGateway {
+  prepareCount = 0;
+
+  async prepareSentenceAudio(request: SentenceNarrationRequest): Promise<SentenceNarration> {
+    this.prepareCount += 1;
+
+    return {
+      bookId: request.bookId,
+      chapterId: request.chapterId,
+      sentenceId: request.sentenceId,
+      readiness: "ready",
+      durationSec: 1,
+      sourceUrl: "data:audio/wav;base64,UklGRg==",
+      playbackMode: "html-audio",
+      cached: false,
+      message: null
+    };
+  }
+
+  async playPreparedSentenceAudio(): Promise<void> {
+    return undefined;
+  }
+
+  async stopPreparedSentenceAudio(): Promise<void> {
+    return undefined;
+  }
+}
+
+function createRequest(sentenceId: string): SentenceNarrationRequest {
+  return {
+    bookId: "book",
+    chapterId: "chapter",
+    sentenceId,
+    sentenceIndex: Number(sentenceId.split("-").at(-1) ?? 0),
+    text: sentenceId
+  };
+}
