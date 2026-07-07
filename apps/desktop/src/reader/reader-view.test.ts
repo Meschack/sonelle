@@ -8,6 +8,14 @@ describe("fixture reader view", () => {
     expect(reader.sentences).toHaveLength(5);
     expect(reader.sentences[0]?.id).toBe("fixture-book-mara:chapter-1:sentence-1");
     expect(reader.sentences[0]?.tokens.some((token) => token.kind === "word")).toBe(true);
+    expect(reader.chapters.map((chapter) => chapter.title)).toEqual(["Chapter 1", "Chapter 2"]);
+  });
+
+  it("can open another fixture chapter for web preview navigation", () => {
+    const reader = buildFixtureReaderView({ chapterId: "chapter-2" });
+
+    expect(reader.chapter.title).toBe("Chapter 2");
+    expect(reader.sentences[0]?.id).toBe("fixture-book-mara:chapter-2:sentence-1");
   });
 
   it("turns a persisted reader document into the active chapter view", () => {
@@ -35,6 +43,14 @@ describe("fixture reader view", () => {
 
     expect(reader.source).toBe("library");
     expect(reader.book.title).toBe("Imported");
+    expect(reader.chapters).toEqual([
+      {
+        id: "chapter-1",
+        title: "One",
+        index: 0,
+        sentenceCount: 1
+      }
+    ]);
     expect(reader.sentences[0]?.tokens.map((token) => token.text)).toEqual([
       "Hello",
       " ",

@@ -56,6 +56,7 @@ import type { LibraryBookSummary } from "./reader-document";
 import {
   buildFixtureReaderView,
   buildReaderViewFromDocument,
+  type ReaderChapterNavigationItem,
   type ReaderSentenceView,
   type ReaderView
 } from "./reader-view";
@@ -553,9 +554,23 @@ export function ReaderExperience() {
   };
 
   const openSampleReader = () => {
-    activateReader(sampleReader);
+    activateReader(buildFixtureReaderView());
     setLibraryNotice(null);
     void refreshBookmarks(sampleReader.book.id);
+  };
+
+  const openChapter = async (chapterId: string) => {
+    if (chapterId === reader().chapter.id) return;
+
+    if (reader().source === "sample") {
+      const nextReader = buildFixtureReaderView({ chapterId, sentenceIndex: 0 });
+      activateReader(nextReader, 0);
+      setLibraryNotice(null);
+      void refreshBookmarks(nextReader.book.id);
+      return;
+    }
+
+    await openLibraryBook(reader().book.id, { chapterId, sentenceIndex: 0 });
   };
 
   const openLibraryBook = async (bookId: string, options: OpenBookOptions = {}) => {
@@ -638,7 +653,13 @@ export function ReaderExperience() {
     }
 
     if (bookmark.bookId === sampleReader.book.id) {
-      activateReader(sampleReader, bookmark.sentenceIndex);
+      activateReader(
+        buildFixtureReaderView({
+          chapterId: bookmark.chapterId,
+          sentenceIndex: bookmark.sentenceIndex
+        }),
+        bookmark.sentenceIndex
+      );
       setInspectorTab("bookmarks");
       return;
     }
@@ -705,6 +726,12 @@ export function ReaderExperience() {
           <h1>{reader().book.title}</h1>
           <span>{reader().book.author}</span>
         </header>
+
+        <ChapterNavigator
+          chapters={reader().chapters}
+          activeChapterId={reader().chapter.id}
+          onOpenChapter={openChapter}
+        />
 
         <div class="reader-layout">
           <div class="audio-margin" aria-hidden="true">
@@ -797,6 +824,40 @@ export function ReaderExperience() {
         onNext={() => moveSentence(1)}
       />
     </main>
+  );
+}
+
+interface ChapterNavigatorProps {
+  chapters: ReaderChapterNavigationItem[];
+  activeChapterId: string;
+  onOpenChapter: (chapterId: string) => void;
+}
+
+function ChapterNavigator(props: ChapterNavigatorProps) {
+  return (
+    <nav class="chapter-navigation" aria-label="Table of contents">
+      <span class="chapter-navigation-label">Chapters</span>
+      <div class="chapter-navigation-list" role="list">
+        <For each={props.chapters}>
+          {(chapter) => (
+            <button
+              classList={{
+                active: chapter.id === props.activeChapterId
+              }}
+              type="button"
+              aria-current={chapter.id === props.activeChapterId ? "page" : undefined}
+              disabled={chapter.id === props.activeChapterId}
+              onClick={() => props.onOpenChapter(chapter.id)}
+            >
+              <span>{chapter.title}</span>
+              <small>
+                {chapter.sentenceCount} sentence{chapter.sentenceCount === 1 ? "" : "s"}
+              </small>
+            </button>
+          )}
+        </For>
+      </div>
+    </nav>
   );
 }
 

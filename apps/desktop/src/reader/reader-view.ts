@@ -10,6 +10,13 @@ export interface ReaderSentenceView {
   tokens: ReaderTextToken[];
 }
 
+export interface ReaderChapterNavigationItem {
+  id: string;
+  title: string;
+  index: number;
+  sentenceCount: number;
+}
+
 export interface ReaderView {
   source: "sample" | "library";
   book: {
@@ -21,6 +28,7 @@ export interface ReaderView {
     id: string;
     title: string;
   };
+  chapters: ReaderChapterNavigationItem[];
   initialSentenceIndex: number;
   sentences: ReaderSentenceView[];
 }
@@ -30,7 +38,36 @@ export interface BuildReaderViewOptions {
   sentenceIndex?: number;
 }
 
-export function buildFixtureReaderView(book: FixtureBook = fixtureBook): ReaderView {
+export function buildFixtureReaderView(
+  options: BuildReaderViewOptions = {},
+  book: FixtureBook = fixtureBook
+): ReaderView {
+  const chapters = book.chapters.map((chapter, index) => ({
+    id: chapter.id,
+    title: chapter.title,
+    index,
+    sentenceCount: segmentSentences(chapter.body).length
+  }));
+  const chapter = book.chapters.find((entry) => entry.id === options.chapterId) ?? book.chapters[0];
+
+  if (chapter == null) {
+    return {
+      source: "sample",
+      book: {
+        id: book.id,
+        title: book.title,
+        author: book.author
+      },
+      chapter: {
+        id: "empty",
+        title: "Untitled chapter"
+      },
+      chapters: [],
+      initialSentenceIndex: 0,
+      sentences: []
+    };
+  }
+
   return {
     source: "sample",
     book: {
@@ -39,12 +76,14 @@ export function buildFixtureReaderView(book: FixtureBook = fixtureBook): ReaderV
       author: book.author
     },
     chapter: {
-      id: book.chapter.id,
-      title: book.chapter.title
+      id: chapter.id,
+      title: chapter.title
     },
-    initialSentenceIndex: 0,
-    sentences: segmentSentences(book.chapter.body).map((sentence) => ({
-      id: createSentenceId(book.id, book.chapter.id, sentence.index),
+    chapters,
+    initialSentenceIndex:
+      options.chapterId === chapter.id && options.sentenceIndex != null ? options.sentenceIndex : 0,
+    sentences: segmentSentences(chapter.body).map((sentence) => ({
+      id: createSentenceId(book.id, chapter.id, sentence.index),
       index: sentence.index,
       text: sentence.text,
       tokens: tokenizeReaderText(sentence.text)
@@ -69,6 +108,7 @@ export function buildReaderViewFromDocument(
         id: "empty",
         title: "Untitled chapter"
       },
+      chapters: [],
       initialSentenceIndex: 0,
       sentences: []
     };
@@ -81,6 +121,12 @@ export function buildReaderViewFromDocument(
       id: chapter.id,
       title: chapter.title
     },
+    chapters: document.chapters.map((entry) => ({
+      id: entry.id,
+      title: entry.title,
+      index: entry.index,
+      sentenceCount: entry.sentences.length
+    })),
     initialSentenceIndex:
       options.chapterId === chapter.id && options.sentenceIndex != null
         ? options.sentenceIndex
