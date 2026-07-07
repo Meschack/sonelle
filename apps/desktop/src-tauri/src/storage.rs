@@ -4,6 +4,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
 use crate::{
@@ -72,6 +73,65 @@ pub struct SaveReadingPositionRequest {
     pub book_id: String,
     pub chapter_id: String,
     pub sentence_index: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookmarkView {
+    pub id: String,
+    pub book_id: String,
+    pub book_title: String,
+    pub chapter_id: String,
+    pub chapter_title: String,
+    pub sentence_id: String,
+    pub sentence_index: i64,
+    pub text: String,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveBookmarkRequest {
+    pub book_id: String,
+    pub chapter_id: String,
+    pub sentence_id: String,
+    pub sentence_index: i64,
+    pub text: String,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibrarySearchRequest {
+    pub query: String,
+    pub book_id: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibrarySearchResultView {
+    pub id: String,
+    pub kind: String,
+    pub book_id: String,
+    pub book_title: String,
+    pub author: String,
+    pub chapter_id: Option<String>,
+    pub chapter_title: Option<String>,
+    pub sentence_id: Option<String>,
+    pub sentence_index: Option<i64>,
+    pub excerpt: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookExportView {
+    pub exported_at: String,
+    pub book: ReaderBookView,
+    pub chapters: Vec<ReaderChapterView>,
+    pub position: Option<ReadingPositionView>,
+    pub bookmarks: Vec<BookmarkView>,
 }
 
 pub struct ReadexStore {
@@ -310,6 +370,207 @@ impl ReadexStore {
         )
     }
 
+    pub fn list_bookmarks(&self, book_id: Option<&str>) -> Result<Vec<BookmarkView>, String> {
+        let connection = self.connect()?;
+
+        if let Some(book_id) = book_id {
+            let mut statement = connection
+                .prepare(
+                    "SELECT
+                        bookmarks.id,
+                        bookmarks.book_id,
+                        books.title,
+                        bookmarks.chapter_id,
+                        chapters.title,
+                        bookmarks.sentence_id,
+                        bookmarks.sentence_index,
+                        bookmarks.text,
+                        bookmarks.note,
+                        bookmarks.created_at
+                     FROM bookmarks
+                     INNER JOIN books ON books.id = bookmarks.book_id
+                     INNER JOIN chapters ON chapters.id = bookmarks.chapter_id
+                     WHERE bookmarks.book_id = ?1
+                     ORDER BY bookmarks.created_at DESC",
+                )
+                .map_err(|_| "We couldn't read your bookmarks.".to_string())?;
+
+            let bookmarks = statement
+                .query_map(params![book_id], read_bookmark_row)
+                .map_err(|_| "We couldn't read your bookmarks.".to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| "We couldn't read your bookmarks.".to_string())?;
+
+            return Ok(bookmarks);
+        }
+
+        let mut statement = connection
+            .prepare(
+                "SELECT
+                    bookmarks.id,
+                    bookmarks.book_id,
+                    books.title,
+                    bookmarks.chapter_id,
+                    chapters.title,
+                    bookmarks.sentence_id,
+                    bookmarks.sentence_index,
+                    bookmarks.text,
+                    bookmarks.note,
+                    bookmarks.created_at
+                 FROM bookmarks
+                 INNER JOIN books ON books.id = bookmarks.book_id
+                 INNER JOIN chapters ON chapters.id = bookmarks.chapter_id
+                 ORDER BY bookmarks.created_at DESC",
+            )
+            .map_err(|_| "We couldn't read your bookmarks.".to_string())?;
+
+        let bookmarks = statement
+            .query_map([], read_bookmark_row)
+            .map_err(|_| "We couldn't read your bookmarks.".to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "We couldn't read your bookmarks.".to_string())?;
+
+        Ok(bookmarks)
+    }
+
+    pub fn save_bookmark(&self, bookmark: SaveBookmarkRequest) -> Result<BookmarkView, String> {
+        let connection = self.connect()?;
+        let id = bookmark_id(
+            &bookmark.book_id,
+            &bookmark.chapter_id,
+            &bookmark.sentence_id,
+        );
+        let created_at = connection
+            .query_row(
+                "SELECT created_at FROM bookmarks WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|_| "We couldn't save that bookmark.".to_string())?
+            .unwrap_or_else(now);
+
+        connection
+            .execute(
+                "INSERT INTO bookmarks (
+                    id,
+                    book_id,
+                    chapter_id,
+                    sentence_id,
+                    sentence_index,
+                    text,
+                    note,
+                    created_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(book_id, chapter_id, sentence_id) DO UPDATE SET
+                   sentence_index = excluded.sentence_index,
+                   text = excluded.text,
+                   note = excluded.note",
+                params![
+                    id,
+                    bookmark.book_id,
+                    bookmark.chapter_id,
+                    bookmark.sentence_id,
+                    bookmark.sentence_index,
+                    bookmark.text,
+                    bookmark.note,
+                    created_at
+                ],
+            )
+            .map_err(|_| "We couldn't save that bookmark.".to_string())?;
+
+        insert_event(
+            &connection,
+            "BookmarkCreated",
+            json!({
+                "bookId": bookmark.book_id,
+                "chapterId": bookmark.chapter_id,
+                "sentenceId": bookmark.sentence_id,
+                "sentenceIndex": bookmark.sentence_index
+            }),
+        )?;
+
+        self.read_bookmark_by_id(&connection, &id)
+    }
+
+    pub fn delete_bookmark(&self, bookmark_id: &str) -> Result<(), String> {
+        let connection = self.connect()?;
+        let deleted = connection
+            .execute("DELETE FROM bookmarks WHERE id = ?1", params![bookmark_id])
+            .map_err(|_| "We couldn't remove that bookmark.".to_string())?;
+
+        if deleted > 0 {
+            insert_event(
+                &connection,
+                "BookmarkDeleted",
+                json!({
+                    "bookmarkId": bookmark_id
+                }),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    pub fn search_library(
+        &self,
+        request: LibrarySearchRequest,
+    ) -> Result<Vec<LibrarySearchResultView>, String> {
+        let query = normalize_search_query(&request.query);
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let connection = self.connect()?;
+        let limit = request.limit.unwrap_or(20).clamp(1, 50);
+        let pattern = like_pattern(&query);
+        let mut results =
+            self.search_books(&connection, request.book_id.as_deref(), &pattern, limit)?;
+        let remaining = limit - results.len() as i64;
+
+        if remaining > 0 {
+            results.extend(self.search_sentences(
+                &connection,
+                request.book_id.as_deref(),
+                &pattern,
+                remaining,
+            )?);
+        }
+
+        Ok(results)
+    }
+
+    pub fn export_book_data(&self, book_id: &str) -> Result<BookExportView, String> {
+        let connection = self.connect()?;
+        insert_event(
+            &connection,
+            "BookExportRequested",
+            json!({
+                "bookId": book_id
+            }),
+        )?;
+
+        let document = self.open_book(book_id)?;
+        let bookmarks = self.list_bookmarks(Some(book_id))?;
+        insert_event(
+            &connection,
+            "BookExported",
+            json!({
+                "bookId": book_id,
+                "bookmarkCount": bookmarks.len()
+            }),
+        )?;
+
+        Ok(BookExportView {
+            exported_at: now(),
+            book: document.book,
+            chapters: document.chapters,
+            position: document.position,
+            bookmarks,
+        })
+    }
+
     fn init(&self) -> Result<(), String> {
         let connection = self.connect()?;
         connection
@@ -348,6 +609,18 @@ impl ReadexStore {
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS bookmarks (
+                    id TEXT PRIMARY KEY,
+                    book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                    chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+                    sentence_id TEXT NOT NULL REFERENCES sentences(id) ON DELETE CASCADE,
+                    sentence_index INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    note TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(book_id, chapter_id, sentence_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS domain_events (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -359,6 +632,8 @@ impl ReadexStore {
                     ON chapters(book_id, position);
                 CREATE INDEX IF NOT EXISTS idx_sentences_chapter_position
                     ON sentences(chapter_id, position);
+                CREATE INDEX IF NOT EXISTS idx_bookmarks_book_created
+                    ON bookmarks(book_id, created_at);
                 ",
             )
             .map_err(|_| "We couldn't prepare the local library.".to_string())
@@ -426,6 +701,133 @@ impl ReadexStore {
         Ok(sentences)
     }
 
+    fn read_bookmark_by_id(
+        &self,
+        connection: &Connection,
+        bookmark_id: &str,
+    ) -> Result<BookmarkView, String> {
+        connection
+            .query_row(
+                "SELECT
+                    bookmarks.id,
+                    bookmarks.book_id,
+                    books.title,
+                    bookmarks.chapter_id,
+                    chapters.title,
+                    bookmarks.sentence_id,
+                    bookmarks.sentence_index,
+                    bookmarks.text,
+                    bookmarks.note,
+                    bookmarks.created_at
+                 FROM bookmarks
+                 INNER JOIN books ON books.id = bookmarks.book_id
+                 INNER JOIN chapters ON chapters.id = bookmarks.chapter_id
+                 WHERE bookmarks.id = ?1",
+                params![bookmark_id],
+                read_bookmark_row,
+            )
+            .map_err(|_| "We couldn't read that bookmark.".to_string())
+    }
+
+    fn search_books(
+        &self,
+        connection: &Connection,
+        book_id: Option<&str>,
+        pattern: &str,
+        limit: i64,
+    ) -> Result<Vec<LibrarySearchResultView>, String> {
+        let mut statement = connection
+            .prepare(
+                "SELECT id, title, author
+                 FROM books
+                 WHERE (?1 IS NULL OR id = ?1)
+                   AND (
+                    LOWER(title) LIKE ?2 ESCAPE '\\'
+                    OR LOWER(author) LIKE ?2 ESCAPE '\\'
+                   )
+                 ORDER BY imported_at DESC
+                 LIMIT ?3",
+            )
+            .map_err(|_| "We couldn't search your library.".to_string())?;
+
+        let results = statement
+            .query_map(params![book_id, pattern, limit], |row| {
+                let id: String = row.get(0)?;
+                let title: String = row.get(1)?;
+                let author: String = row.get(2)?;
+
+                Ok(LibrarySearchResultView {
+                    id: format!("book:{id}"),
+                    kind: "book".to_string(),
+                    book_id: id,
+                    book_title: title.clone(),
+                    author,
+                    chapter_id: None,
+                    chapter_title: None,
+                    sentence_id: None,
+                    sentence_index: None,
+                    excerpt: title,
+                })
+            })
+            .map_err(|_| "We couldn't search your library.".to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "We couldn't search your library.".to_string())?;
+
+        Ok(results)
+    }
+
+    fn search_sentences(
+        &self,
+        connection: &Connection,
+        book_id: Option<&str>,
+        pattern: &str,
+        limit: i64,
+    ) -> Result<Vec<LibrarySearchResultView>, String> {
+        let mut statement = connection
+            .prepare(
+                "SELECT
+                    sentences.id,
+                    books.id,
+                    books.title,
+                    books.author,
+                    chapters.id,
+                    chapters.title,
+                    sentences.position,
+                    sentences.text
+                 FROM sentences
+                 INNER JOIN books ON books.id = sentences.book_id
+                 INNER JOIN chapters ON chapters.id = sentences.chapter_id
+                 WHERE (?1 IS NULL OR books.id = ?1)
+                   AND LOWER(sentences.text) LIKE ?2 ESCAPE '\\'
+                 ORDER BY books.imported_at DESC, chapters.position ASC, sentences.position ASC
+                 LIMIT ?3",
+            )
+            .map_err(|_| "We couldn't search your library.".to_string())?;
+
+        let results = statement
+            .query_map(params![book_id, pattern, limit], |row| {
+                let sentence_id: String = row.get(0)?;
+
+                Ok(LibrarySearchResultView {
+                    id: format!("sentence:{sentence_id}"),
+                    kind: "sentence".to_string(),
+                    book_id: row.get(1)?,
+                    book_title: row.get(2)?,
+                    author: row.get(3)?,
+                    chapter_id: Some(row.get(4)?),
+                    chapter_title: Some(row.get(5)?),
+                    sentence_id: Some(sentence_id),
+                    sentence_index: Some(row.get(6)?),
+                    excerpt: row.get(7)?,
+                })
+            })
+            .map_err(|_| "We couldn't search your library.".to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "We couldn't search your library.".to_string())?;
+
+        Ok(results)
+    }
+
     fn connect(&self) -> Result<Connection, String> {
         Connection::open(&self.db_path)
             .map_err(|_| "We couldn't open the local library.".to_string())
@@ -450,6 +852,55 @@ fn insert_event(
         .map_err(|_| "We couldn't save the library update.".to_string())
 }
 
+fn read_bookmark_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BookmarkView> {
+    Ok(BookmarkView {
+        id: row.get(0)?,
+        book_id: row.get(1)?,
+        book_title: row.get(2)?,
+        chapter_id: row.get(3)?,
+        chapter_title: row.get(4)?,
+        sentence_id: row.get(5)?,
+        sentence_index: row.get(6)?,
+        text: row.get(7)?,
+        note: row.get(8)?,
+        created_at: row.get(9)?,
+    })
+}
+
+fn bookmark_id(book_id: &str, chapter_id: &str, sentence_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(book_id.as_bytes());
+    hasher.update(chapter_id.as_bytes());
+    hasher.update(sentence_id.as_bytes());
+
+    format!("bookmark-{}", hex_prefix(&hasher.finalize(), 24))
+}
+
+fn normalize_search_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn like_pattern(query: &str) -> String {
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
+fn hex_prefix(bytes: &[u8], length: usize) -> String {
+    bytes
+        .iter()
+        .flat_map(|byte| [byte >> 4, byte & 0x0f])
+        .take(length)
+        .map(|nibble| char::from_digit(nibble.into(), 16).unwrap_or('0'))
+        .collect()
+}
+
 fn now() -> String {
     Utc::now().to_rfc3339()
 }
@@ -460,7 +911,9 @@ mod tests {
 
     use chrono::Utc;
 
-    use super::{ReadexStore, SaveReadingPositionRequest};
+    use super::{
+        LibrarySearchRequest, ReadexStore, SaveBookmarkRequest, SaveReadingPositionRequest,
+    };
     use crate::epub_import::{ImportedBook, ImportedChapter};
 
     #[test]
@@ -504,6 +957,68 @@ mod tests {
                 .sentence_index,
             1
         );
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn persists_bookmarks_searches_sentences_and_exports_book_data() {
+        let temp_dir = temp_store_dir();
+        fs::create_dir_all(&temp_dir).expect("test store dir should be created");
+        let store =
+            ReadexStore::open_at(temp_dir.join("readex.sqlite3")).expect("store should initialize");
+        store
+            .save_imported_book(ImportedBook {
+                id: "book-search".to_string(),
+                title: "Searchable Book".to_string(),
+                author: "Test Author".to_string(),
+                source_path: "/tmp/search.epub".to_string(),
+                chapters: vec![ImportedChapter {
+                    id: "book-search:chapter-1".to_string(),
+                    title: "Chapter One".to_string(),
+                    index: 0,
+                    body: "A quiet sentence. The bookmark target appears here.".to_string(),
+                }],
+            })
+            .expect("book should save");
+
+        let bookmark = store
+            .save_bookmark(SaveBookmarkRequest {
+                book_id: "book-search".to_string(),
+                chapter_id: "book-search:chapter-1".to_string(),
+                sentence_id: "book-search:chapter-1:sentence-2".to_string(),
+                sentence_index: 1,
+                text: "The bookmark target appears here.".to_string(),
+                note: None,
+            })
+            .expect("bookmark should save");
+        let bookmarks = store
+            .list_bookmarks(Some("book-search"))
+            .expect("bookmarks should list");
+        let results = store
+            .search_library(LibrarySearchRequest {
+                query: "bookmark target".to_string(),
+                book_id: Some("book-search".to_string()),
+                limit: Some(10),
+            })
+            .expect("search should run");
+        let exported = store
+            .export_book_data("book-search")
+            .expect("book should export");
+
+        assert_eq!(bookmarks.len(), 1);
+        assert_eq!(bookmarks[0].sentence_index, 1);
+        assert!(results.iter().any(|result| result.kind == "sentence"));
+        assert_eq!(exported.book.title, "Searchable Book");
+        assert_eq!(exported.bookmarks.len(), 1);
+
+        store
+            .delete_bookmark(&bookmark.id)
+            .expect("bookmark should delete");
+        assert!(store
+            .list_bookmarks(Some("book-search"))
+            .expect("bookmarks should list")
+            .is_empty());
 
         fs::remove_dir_all(temp_dir).ok();
     }

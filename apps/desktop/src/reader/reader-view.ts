@@ -25,6 +25,11 @@ export interface ReaderView {
   sentences: ReaderSentenceView[];
 }
 
+export interface BuildReaderViewOptions {
+  chapterId?: string;
+  sentenceIndex?: number;
+}
+
 export function buildFixtureReaderView(book: FixtureBook = fixtureBook): ReaderView {
   return {
     source: "sample",
@@ -47,8 +52,12 @@ export function buildFixtureReaderView(book: FixtureBook = fixtureBook): ReaderV
   };
 }
 
-export function buildReaderViewFromDocument(document: ReaderDocumentDto): ReaderView {
+export function buildReaderViewFromDocument(
+  document: ReaderDocumentDto,
+  options: BuildReaderViewOptions = {}
+): ReaderView {
   const chapter =
+    document.chapters.find((entry) => entry.id === options.chapterId) ??
     document.chapters.find((entry) => entry.id === document.position?.chapterId) ??
     document.chapters[0];
 
@@ -73,7 +82,11 @@ export function buildReaderViewFromDocument(document: ReaderDocumentDto): Reader
       title: chapter.title
     },
     initialSentenceIndex:
-      document.position?.chapterId === chapter.id ? document.position.sentenceIndex : 0,
+      options.chapterId === chapter.id && options.sentenceIndex != null
+        ? options.sentenceIndex
+        : document.position?.chapterId === chapter.id
+          ? document.position.sentenceIndex
+          : 0,
     sentences: chapter.sentences.map((sentence) => ({
       id: sentence.id,
       index: sentence.index,

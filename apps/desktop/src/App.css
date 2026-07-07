@@ -60,22 +60,56 @@ button {
   gap: 8px;
 }
 
-.nav-list a {
+.nav-list button {
+  background: transparent;
+  border: 0;
   border-radius: 8px;
   color: #6d6a60;
   padding: 10px 12px;
-  text-decoration: none;
+  text-align: left;
 }
 
-.nav-list a.active {
+.nav-list button.active {
   background: #245bff;
   color: #ffffff;
+}
+
+.nav-list button:focus-visible {
+  box-shadow: 0 0 0 3px rgba(36, 91, 255, 0.16);
+  outline: none;
 }
 
 .library-actions {
   display: grid;
   gap: 14px;
   margin-top: 32px;
+}
+
+.library-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.library-controls input,
+.library-controls select,
+.inspector-panel input,
+.inspector-panel select {
+  background: #fffdfa;
+  border: 1px solid #dedbd1;
+  border-radius: 8px;
+  color: #171713;
+  min-height: 38px;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.library-controls input:focus-visible,
+.library-controls select:focus-visible,
+.inspector-panel input:focus-visible,
+.inspector-panel select:focus-visible {
+  border-color: #245bff;
+  box-shadow: 0 0 0 3px rgba(36, 91, 255, 0.16);
+  outline: none;
 }
 
 .import-button {
@@ -108,7 +142,8 @@ button {
   gap: 8px;
 }
 
-.book-row {
+.book-row,
+.library-search-results button {
   background: transparent;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -121,7 +156,9 @@ button {
 }
 
 .book-row:hover,
-.book-row:focus-visible {
+.book-row:focus-visible,
+.library-search-results button:hover,
+.library-search-results button:focus-visible {
   background: rgba(255, 255, 255, 0.56);
   border-color: #dedbd1;
   outline: none;
@@ -133,16 +170,25 @@ button {
   box-shadow: 0 8px 22px rgba(23, 23, 19, 0.06);
 }
 
-.book-row span {
+.book-row span,
+.library-search-results span {
   font-size: 14px;
   font-weight: 650;
   line-height: 1.25;
 }
 
-.book-row small {
+.book-row small,
+.library-search-results small {
   color: #6d6a60;
   font-size: 12px;
   line-height: 1.3;
+}
+
+.library-search-results {
+  border-top: 1px solid #dedbd1;
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
 }
 
 .reader-surface {
@@ -205,6 +251,10 @@ button {
   transform: scaleY(1.2);
 }
 
+.marker.bookmarked {
+  background: #297d52;
+}
+
 .page {
   font-family: Literata, "Source Serif 4", Georgia, serif;
   font-size: 24px;
@@ -224,6 +274,14 @@ button {
 .sentence.active {
   background: linear-gradient(180deg, transparent 48%, rgba(247, 216, 107, 0.72) 48%);
   box-shadow: 0 0 0 1px rgba(36, 91, 255, 0.08);
+}
+
+.sentence.bookmarked {
+  box-shadow: inset 4px 0 0 rgba(41, 125, 82, 0.48);
+}
+
+.sentence.search-hit {
+  background: rgba(36, 91, 255, 0.08);
 }
 
 .word-shell {
@@ -322,6 +380,33 @@ button {
   padding: 46px 28px;
 }
 
+.inspector-tabs {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.inspector-tabs button {
+  background: transparent;
+  border: 1px solid #dedbd1;
+  border-radius: 8px;
+  color: #6d6a60;
+  min-height: 34px;
+}
+
+.inspector-tabs button.active {
+  background: #171713;
+  border-color: #171713;
+  color: #fffdfa;
+}
+
+.inspector-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+}
+
 .inspector strong {
   display: block;
   font-family: Literata, "Source Serif 4", Georgia, serif;
@@ -372,13 +457,28 @@ button {
 }
 
 .dictionary-actions button,
-.saved-word-row {
+.saved-word-row,
+.result-list button,
+.primary-tool-button,
+.mini-danger {
   background: #ffffff;
   border: 1px solid #dedbd1;
   border-radius: 8px;
   color: #171713;
   min-height: 34px;
   padding: 0 10px;
+}
+
+.primary-tool-button {
+  background: #245bff;
+  border-color: #245bff;
+  color: #ffffff;
+  min-height: 40px;
+}
+
+.mini-danger {
+  color: #9b3a20;
+  min-height: 30px;
 }
 
 .dictionary-actions button.active {
@@ -430,7 +530,11 @@ button {
 }
 
 .dictionary-actions button:focus-visible,
-.saved-word-row:focus-visible {
+.saved-word-row:focus-visible,
+.result-list button:focus-visible,
+.primary-tool-button:focus-visible,
+.mini-danger:focus-visible,
+.inspector-tabs button:focus-visible {
   border-color: #245bff;
   box-shadow: 0 0 0 3px rgba(36, 91, 255, 0.16);
   outline: none;
@@ -446,23 +550,69 @@ button {
   margin-top: 24px;
 }
 
-.saved-word-row {
+.saved-word-row,
+.result-list button {
   display: grid;
   gap: 2px;
   min-height: 46px;
   text-align: left;
 }
 
-.saved-word-row span {
+.saved-word-row span,
+.result-list span {
   font-weight: 650;
 }
 
-.saved-word-row small {
+.saved-word-row small,
+.result-list small {
   color: #6d6a60;
   line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.result-list {
+  display: grid;
+  gap: 8px;
+}
+
+.bookmark-row {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.field-row,
+.toggle-row,
+.tool-card {
+  border-top: 1px solid #dedbd1;
+  display: grid;
+  gap: 8px;
+  padding-top: 14px;
+}
+
+.field-row span,
+.toggle-row span {
+  color: #6d6a60;
+  font-size: 13px;
+}
+
+.toggle-row {
+  align-items: center;
+  display: flex;
+}
+
+.toggle-row input {
+  accent-color: #245bff;
+  height: 16px;
+  width: 16px;
+}
+
+.tool-card p {
+  color: #6d6a60;
+  line-height: 1.5;
+  margin: 0;
 }
 
 .audio-rail {
@@ -598,6 +748,8 @@ button {
   }
 
   .library-notice,
+  .library-controls,
+  .library-search-results,
   .book-list {
     display: none;
   }

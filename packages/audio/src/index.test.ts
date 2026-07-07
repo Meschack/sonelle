@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { FakeNarrationGateway, estimateSentenceDurationSec } from "./index";
+import {
+  createAudioSettings,
+  FakeNarrationGateway,
+  estimateSentenceDurationSec,
+  parseAudioSettings,
+  serializeAudioSettings
+} from "./index";
 
 describe("sentence narration", () => {
   it("keeps fake narration deterministic and cached for tests", async () => {
@@ -26,5 +32,22 @@ describe("sentence narration", () => {
 
   it("estimates sentence duration without exposing timing internals", () => {
     expect(estimateSentenceDurationSec("One two three.")).toBeGreaterThan(1);
+  });
+
+  it("keeps audio settings inside supported playback behavior", () => {
+    expect(createAudioSettings({ playbackRate: 8, autoAdvance: false })).toEqual({
+      playbackRate: 1.5,
+      autoAdvance: false
+    });
+    expect(parseAudioSettings("{nope")).toEqual({
+      playbackRate: 1,
+      autoAdvance: true
+    });
+    expect(
+      parseAudioSettings(serializeAudioSettings({ playbackRate: 0.9, autoAdvance: false }))
+    ).toEqual({
+      playbackRate: 0.9,
+      autoAdvance: false
+    });
   });
 });

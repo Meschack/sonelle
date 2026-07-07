@@ -12,6 +12,7 @@ export type DomainEventName =
   | "PlaybackPositionChanged"
   | "WordInspected"
   | "BookmarkCreated"
+  | "BookmarkDeleted"
   | "BookExportRequested"
   | "BookExported";
 

@@ -1,15 +1,24 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import {
-  advancePlayback,
+  createAudioSettings,
+  type AudioSettings,
+  type SentenceNarration,
+  type SentenceNarrationRequest
+} from "@readex/audio";
+import { bookmarkedBookIds, filterLibraryBooks, type LibraryBookFilter } from "@readex/library";
+import {
   createPlaybackState,
+  finishSentencePlayback,
   highlightSentence,
   movePlayback,
   pausePlayback,
   playPlayback,
+  searchReaderSentences,
   selectPlaybackSentence,
-  type PlaybackStatus
+  sentenceMatchesQuery,
+  type PlaybackStatus,
+  type ReaderSearchResult
 } from "@readex/reader";
-import type { SentenceNarration, SentenceNarrationRequest } from "@readex/audio";
 import {
   createWordInsight,
   dictionaryLookupFailed,
@@ -27,11 +36,19 @@ import {
   type WordInsight
 } from "@readex/learning";
 import type { ReaderTextToken } from "@readex/text";
+import {
+  createAudioCacheRepository,
+  type AudioCacheStatsDto
+} from "../audio/audio-cache-repository";
+import { createAudioSettingsRepository } from "../audio/audio-settings-repository";
 import { createNarrationRepository, toFriendlyNarrationError } from "../audio/narration-repository";
 import { createDictionaryRepository } from "../learning/dictionary-repository";
 import {
   createBookRepository,
   toFriendlyLibraryError,
+  type BookExportDataDto,
+  type LibraryBookmarkDto,
+  type LibrarySearchResultDto,
   type SaveReadingPositionInput
 } from "../library/book-repository";
 import type { LibraryBookSummary } from "./reader-document";
@@ -42,25 +59,50 @@ import {
   type ReaderView
 } from "./reader-view";
 
+type InspectorTab = "word" | "search" | "bookmarks" | "settings";
+
 interface SelectedWord {
   sentenceId: string;
   tokenIndex: number;
   surface: string;
 }
 
+interface OpenBookOptions {
+  chapterId?: string;
+  sentenceIndex?: number;
+}
+
 export function ReaderExperience() {
   const repository = createBookRepository();
   const narrationRepository = createNarrationRepository();
   const dictionaryRepository = createDictionaryRepository();
+  const audioCacheRepository = createAudioCacheRepository();
+  const audioSettingsRepository = createAudioSettingsRepository();
   const sampleReader = buildFixtureReaderView();
+
   const [reader, setReader] = createSignal<ReaderView>(sampleReader);
   const [libraryBooks, setLibraryBooks] = createSignal<LibraryBookSummary[]>([]);
   const [libraryNotice, setLibraryNotice] = createSignal<string | null>(null);
+  const [libraryQuery, setLibraryQuery] = createSignal("");
+  const [libraryFilter, setLibraryFilter] = createSignal<LibraryBookFilter>("all");
+  const [librarySearchResults, setLibrarySearchResults] = createSignal<LibrarySearchResultDto[]>(
+    []
+  );
+  const [bookmarks, setBookmarks] = createSignal<LibraryBookmarkDto[]>([]);
+  const [bookmarkNotice, setBookmarkNotice] = createSignal<string | null>(null);
+  const [readerSearchQuery, setReaderSearchQuery] = createSignal("");
+  const [inspectorTab, setInspectorTab] = createSignal<InspectorTab>("word");
   const [isImporting, setIsImporting] = createSignal(false);
   const [playback, setPlayback] = createSignal(createPlaybackState());
   const [activeNarration, setActiveNarration] = createSignal<SentenceNarration | null>(null);
   const [isPreparingNarration, setIsPreparingNarration] = createSignal(false);
   const [narrationNotice, setNarrationNotice] = createSignal<string | null>(null);
+  const [audioSettings, setAudioSettings] = createSignal<AudioSettings>(
+    audioSettingsRepository.load()
+  );
+  const [audioCacheStats, setAudioCacheStats] = createSignal<AudioCacheStatsDto | null>(null);
+  const [audioCacheNotice, setAudioCacheNotice] = createSignal<string | null>(null);
+  const [exportNotice, setExportNotice] = createSignal<string | null>(null);
   const [savedDictionary, setSavedDictionary] = createSignal<SavedDictionary>(
     dictionaryRepository.loadSavedDictionary()
   );
@@ -68,11 +110,47 @@ export function ReaderExperience() {
     Record<string, DictionaryLookupResult>
   >({});
   const [selectedWord, setSelectedWord] = createSignal<SelectedWord | null>(null);
+
   let activeHtmlAudio: HTMLAudioElement | null = null;
   let narrationRun = 0;
+  let librarySearchRun = 0;
+  let readerSearchInput: HTMLInputElement | undefined;
 
   const activeSentence = createMemo(() => reader().sentences[playback().activeSentenceIndex]);
   const highlight = createMemo(() => highlightSentence(activeSentence()?.id ?? null));
+  const currentBookBookmarks = createMemo(() =>
+    bookmarks().filter((bookmark) => bookmark.bookId === reader().book.id)
+  );
+  const activeBookmark = createMemo(() => {
+    const sentence = activeSentence();
+    if (sentence == null) return null;
+
+    return (
+      currentBookBookmarks().find(
+        (bookmark) =>
+          bookmark.chapterId === reader().chapter.id && bookmark.sentenceId === sentence.id
+      ) ?? null
+    );
+  });
+  const bookmarkedSentenceIds = createMemo(
+    () =>
+      new Set(
+        currentBookBookmarks()
+          .filter((bookmark) => bookmark.chapterId === reader().chapter.id)
+          .map((bookmark) => bookmark.sentenceId)
+      )
+  );
+  const filteredBooks = createMemo(() =>
+    filterLibraryBooks({
+      books: libraryBooks(),
+      query: libraryQuery(),
+      filter: libraryFilter(),
+      bookmarkedBookIds: bookmarkedBookIds(bookmarks())
+    })
+  );
+  const readerSearchResults = createMemo(() =>
+    searchReaderSentences(reader().sentences, readerSearchQuery())
+  );
   const activeWordInsight = createMemo(() => {
     const selection = selectedWord();
     if (selection == null) return null;
@@ -110,6 +188,38 @@ export function ReaderExperience() {
 
   onMount(() => {
     void refreshLibrary();
+    void refreshAllBookmarks();
+    void refreshAudioCacheStats();
+
+    window.addEventListener("keydown", handleShortcut);
+    onCleanup(() => window.removeEventListener("keydown", handleShortcut));
+  });
+
+  createEffect(() => {
+    const settings = audioSettings();
+    if (activeHtmlAudio != null) {
+      activeHtmlAudio.playbackRate = settings.playbackRate;
+    }
+    audioSettingsRepository.save(settings);
+  });
+
+  createEffect(() => {
+    const query = libraryQuery();
+    const runId = ++librarySearchRun;
+
+    if (query.trim().length < 2) {
+      setLibrarySearchResults([]);
+      return;
+    }
+
+    void repository
+      .searchLibrary({ query, limit: 8 })
+      .then((results) => {
+        if (runId === librarySearchRun) setLibrarySearchResults(results);
+      })
+      .catch(() => {
+        if (runId === librarySearchRun) setLibrarySearchResults([]);
+      });
   });
 
   createEffect(() => {
@@ -160,6 +270,46 @@ export function ReaderExperience() {
     });
   });
 
+  const handleShortcut = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || isTypingTarget(event.target)) return;
+
+    if (event.key === " ") {
+      event.preventDefault();
+      togglePlayback();
+      return;
+    }
+
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      moveSentence(-1);
+      return;
+    }
+
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      moveSentence(1);
+      return;
+    }
+
+    if (event.key.toLocaleLowerCase() === "b") {
+      event.preventDefault();
+      void toggleActiveBookmark();
+      return;
+    }
+
+    if (event.key === "/") {
+      event.preventDefault();
+      setInspectorTab("search");
+      queueMicrotask(() => readerSearchInput?.focus());
+      return;
+    }
+
+    if (event.key === "Escape") {
+      setSelectedWord(null);
+      setReaderSearchQuery("");
+    }
+  };
+
   const togglePlayback = () => {
     setPlayback((current) =>
       current.status === "playing"
@@ -188,6 +338,7 @@ export function ReaderExperience() {
       tokenIndex: token.index,
       surface: token.text
     });
+    setInspectorTab("word");
   };
 
   const selectSavedWord = (word: SavedDictionaryEntry) => {
@@ -196,6 +347,7 @@ export function ReaderExperience() {
       tokenIndex: -1,
       surface: word.surface
     });
+    setInspectorTab("word");
   };
 
   const isSelectedWord = (sentenceId: string, token: ReaderTextToken) =>
@@ -240,13 +392,20 @@ export function ReaderExperience() {
     persistSavedDictionary(forgetDictionaryEntry(savedDictionary(), surface));
   };
 
-  const activateReader = (nextReader: ReaderView) => {
+  const updateAudioSettings = (nextSettings: Partial<AudioSettings>) => {
+    setAudioSettings((current) => createAudioSettings({ ...current, ...nextSettings }));
+  };
+
+  const activateReader = (
+    nextReader: ReaderView,
+    sentenceIndex = nextReader.initialSentenceIndex
+  ) => {
     setReader(nextReader);
     setPlayback(() =>
       selectPlaybackSentence(
-        { activeSentenceIndex: nextReader.initialSentenceIndex, status: "idle" },
+        { activeSentenceIndex: sentenceIndex, status: "idle" },
         nextReader.sentences.length,
-        nextReader.initialSentenceIndex
+        sentenceIndex
       )
     );
     setActiveNarration(null);
@@ -266,6 +425,7 @@ export function ReaderExperience() {
 
       setActiveNarration(narration);
       setIsPreparingNarration(false);
+      if (!narration.cached) void refreshAudioCacheStats();
 
       if (narration.readiness !== "ready") {
         setNarrationNotice(narration.message ?? "Narration needs attention.");
@@ -280,7 +440,9 @@ export function ReaderExperience() {
       }
 
       if (runId !== narrationRun) return;
-      setPlayback((current) => advancePlayback(current, sentenceCount));
+      setPlayback((current) =>
+        finishSentencePlayback(current, sentenceCount, audioSettings().autoAdvance)
+      );
     } catch (error) {
       if (runId !== narrationRun) return;
 
@@ -308,6 +470,7 @@ export function ReaderExperience() {
       };
 
       activeHtmlAudio = audio;
+      audio.playbackRate = audioSettings().playbackRate;
       audio.onended = finish;
       audio.onpause = () => {
         if (runId !== narrationRun) finish();
@@ -334,16 +497,56 @@ export function ReaderExperience() {
     }
   };
 
+  const refreshAllBookmarks = async () => {
+    try {
+      setBookmarks(await repository.listBookmarks());
+    } catch (error) {
+      setBookmarkNotice(toFriendlyLibraryError(error));
+    }
+  };
+
+  const refreshBookmarks = async (bookId: string) => {
+    try {
+      const nextBookmarks = await repository.listBookmarks(bookId);
+      setBookmarks((current) => [
+        ...nextBookmarks,
+        ...current.filter((bookmark) => bookmark.bookId !== bookId)
+      ]);
+    } catch (error) {
+      setBookmarkNotice(toFriendlyLibraryError(error));
+    }
+  };
+
+  const refreshAudioCacheStats = async () => {
+    try {
+      setAudioCacheStats(await audioCacheRepository.getStats());
+    } catch (error) {
+      setAudioCacheNotice(toFriendlyNarrationError(error));
+    }
+  };
+
+  const clearAudioCache = async () => {
+    try {
+      setAudioCacheStats(await audioCacheRepository.clear());
+      setAudioCacheNotice("Prepared audio cleared.");
+    } catch (error) {
+      setAudioCacheNotice(toFriendlyNarrationError(error));
+    }
+  };
+
   const openSampleReader = () => {
     activateReader(sampleReader);
     setLibraryNotice(null);
+    void refreshBookmarks(sampleReader.book.id);
   };
 
-  const openLibraryBook = async (bookId: string) => {
+  const openLibraryBook = async (bookId: string, options: OpenBookOptions = {}) => {
     try {
       const document = await repository.openBook(bookId);
-      activateReader(buildReaderViewFromDocument(document));
+      const nextReader = buildReaderViewFromDocument(document, options);
+      activateReader(nextReader, options.sentenceIndex ?? nextReader.initialSentenceIndex);
       setLibraryNotice(null);
+      await refreshBookmarks(bookId);
     } catch (error) {
       setLibraryNotice(toFriendlyLibraryError(error));
     }
@@ -357,9 +560,11 @@ export function ReaderExperience() {
       const document = await repository.importBookFromDialog();
       if (document == null) return;
 
-      activateReader(buildReaderViewFromDocument(document));
+      const nextReader = buildReaderViewFromDocument(document);
+      activateReader(nextReader);
       setLibraryNotice("Book added to your library.");
       setLibraryBooks(await repository.listBooks());
+      await refreshBookmarks(nextReader.book.id);
     } catch (error) {
       setLibraryNotice(toFriendlyLibraryError(error));
     } finally {
@@ -367,16 +572,113 @@ export function ReaderExperience() {
     }
   };
 
+  const toggleActiveBookmark = async () => {
+    const existing = activeBookmark();
+    if (existing != null) {
+      await deleteBookmark(existing.id);
+      return;
+    }
+
+    const sentence = activeSentence();
+    if (sentence == null) return;
+
+    try {
+      const bookmark = await repository.saveBookmark({
+        bookId: reader().book.id,
+        bookTitle: reader().book.title,
+        chapterId: reader().chapter.id,
+        chapterTitle: reader().chapter.title,
+        sentenceId: sentence.id,
+        sentenceIndex: sentence.index,
+        text: sentence.text,
+        note: null
+      });
+
+      setBookmarks((current) => [bookmark, ...current.filter((item) => item.id !== bookmark.id)]);
+      setBookmarkNotice("Bookmark saved.");
+      setInspectorTab("bookmarks");
+    } catch (error) {
+      setBookmarkNotice(toFriendlyLibraryError(error));
+    }
+  };
+
+  const deleteBookmark = async (bookmarkId: string) => {
+    try {
+      await repository.deleteBookmark(bookmarkId);
+      setBookmarks((current) => current.filter((bookmark) => bookmark.id !== bookmarkId));
+      setBookmarkNotice("Bookmark removed.");
+    } catch (error) {
+      setBookmarkNotice(toFriendlyLibraryError(error));
+    }
+  };
+
+  const openBookmark = async (bookmark: LibraryBookmarkDto) => {
+    if (bookmark.bookId === reader().book.id && bookmark.chapterId === reader().chapter.id) {
+      selectSentence(bookmark.sentenceIndex);
+      setInspectorTab("bookmarks");
+      return;
+    }
+
+    if (bookmark.bookId === sampleReader.book.id) {
+      activateReader(sampleReader, bookmark.sentenceIndex);
+      setInspectorTab("bookmarks");
+      return;
+    }
+
+    await openLibraryBook(bookmark.bookId, {
+      chapterId: bookmark.chapterId,
+      sentenceIndex: bookmark.sentenceIndex
+    });
+    setInspectorTab("bookmarks");
+  };
+
+  const openLibrarySearchResult = async (result: LibrarySearchResultDto) => {
+    if (result.kind === "sentence" && result.chapterId != null && result.sentenceIndex != null) {
+      await openLibraryBook(result.bookId, {
+        chapterId: result.chapterId,
+        sentenceIndex: result.sentenceIndex
+      });
+      return;
+    }
+
+    await openLibraryBook(result.bookId);
+  };
+
+  const openReaderSearchResult = (result: ReaderSearchResult<ReaderSentenceView>) => {
+    selectSentence(result.sentence.index);
+  };
+
+  const exportCurrentBook = async () => {
+    try {
+      const data =
+        reader().source === "library"
+          ? await repository.exportBookData(reader().book.id)
+          : createSampleExport(reader(), playback().activeSentenceIndex, currentBookBookmarks());
+
+      downloadJson(`${slugify(reader().book.title)}-readex-export.json`, data);
+      setExportNotice("Export ready.");
+    } catch (error) {
+      setExportNotice(toFriendlyLibraryError(error));
+    }
+  };
+
   return (
     <main class="readex-shell">
       <LibraryRail
         activeBookId={reader().book.id}
-        books={libraryBooks()}
+        books={filteredBooks()}
+        query={libraryQuery()}
+        filter={libraryFilter()}
         importing={isImporting()}
         notice={libraryNotice()}
+        searchResults={librarySearchResults()}
+        onQueryChange={setLibraryQuery}
+        onFilterChange={setLibraryFilter}
         onImport={importBook}
         onOpenBook={openLibraryBook}
         onOpenSample={openSampleReader}
+        onOpenSearchResult={openLibrarySearchResult}
+        onOpenToolTab={setInspectorTab}
       />
 
       <section class="reader-surface" aria-label="Reader">
@@ -393,7 +695,8 @@ export function ReaderExperience() {
                 <span
                   classList={{
                     marker: true,
-                    active: highlight().activeSentenceId === sentence.id
+                    active: highlight().activeSentenceId === sentence.id,
+                    bookmarked: bookmarkedSentenceIds().has(sentence.id)
                   }}
                 />
               )}
@@ -406,7 +709,9 @@ export function ReaderExperience() {
                 <p
                   classList={{
                     sentence: true,
-                    active: highlight().activeSentenceId === sentence.id
+                    active: highlight().activeSentenceId === sentence.id,
+                    bookmarked: bookmarkedSentenceIds().has(sentence.id),
+                    "search-hit": sentenceMatchesQuery(sentence, readerSearchQuery())
                   }}
                   onClick={() => selectSentence(sentence.index)}
                 >
@@ -430,12 +735,35 @@ export function ReaderExperience() {
         </div>
       </section>
 
-      <WordInspector
+      <ReaderInspector
+        tab={inspectorTab()}
         insight={activeWordInsight()}
         savedWords={savedWords()}
-        onSave={saveDictionaryWord}
-        onForget={forgetSavedWord}
+        readerSearchQuery={readerSearchQuery()}
+        readerSearchResults={readerSearchResults()}
+        bookmarks={currentBookBookmarks()}
+        activeBookmark={activeBookmark()}
+        bookmarkNotice={bookmarkNotice()}
+        audioSettings={audioSettings()}
+        audioCacheStats={audioCacheStats()}
+        audioCacheNotice={audioCacheNotice()}
+        exportNotice={exportNotice()}
+        onTabChange={setInspectorTab}
+        onSaveWord={saveDictionaryWord}
+        onForgetWord={forgetSavedWord}
         onSelectSavedWord={selectSavedWord}
+        onReaderSearchQueryChange={setReaderSearchQuery}
+        onReaderSearchResult={openReaderSearchResult}
+        onReaderSearchInputReady={(input) => {
+          readerSearchInput = input;
+        }}
+        onToggleBookmark={toggleActiveBookmark}
+        onOpenBookmark={openBookmark}
+        onDeleteBookmark={deleteBookmark}
+        onAudioSettingsChange={updateAudioSettings}
+        onRefreshCache={refreshAudioCacheStats}
+        onClearCache={clearAudioCache}
+        onExportBook={exportCurrentBook}
       />
 
       <PlaybackRail
@@ -445,6 +773,7 @@ export function ReaderExperience() {
         status={playback().status}
         narrationStatus={narrationStatusLabel()}
         narrationNotice={narrationNotice()}
+        playbackRate={audioSettings().playbackRate}
         onPrevious={() => moveSentence(-1)}
         onToggle={togglePlayback}
         onNext={() => moveSentence(1)}
@@ -456,24 +785,39 @@ export function ReaderExperience() {
 interface LibraryRailProps {
   activeBookId: string;
   books: LibraryBookSummary[];
+  query: string;
+  filter: LibraryBookFilter;
   importing: boolean;
   notice: string | null;
+  searchResults: LibrarySearchResultDto[];
+  onQueryChange: (query: string) => void;
+  onFilterChange: (filter: LibraryBookFilter) => void;
   onImport: () => void;
   onOpenBook: (bookId: string) => void;
   onOpenSample: () => void;
+  onOpenSearchResult: (result: LibrarySearchResultDto) => void;
+  onOpenToolTab: (tab: InspectorTab) => void;
 }
 
 function LibraryRail(props: LibraryRailProps) {
+  let librarySearchInput: HTMLInputElement | undefined;
+
   return (
     <aside class="library-rail" aria-label="Library">
       <strong class="brand">Readex</strong>
       <nav class="nav-list">
-        <a class="active" href="/">
+        <button class="active" type="button">
           Reader
-        </a>
-        <a href="/">Library</a>
-        <a href="/">Bookmarks</a>
-        <a href="/">Words</a>
+        </button>
+        <button type="button" onClick={() => librarySearchInput?.focus()}>
+          Library
+        </button>
+        <button type="button" onClick={() => props.onOpenToolTab("bookmarks")}>
+          Bookmarks
+        </button>
+        <button type="button" onClick={() => props.onOpenToolTab("word")}>
+          Words
+        </button>
       </nav>
       <section class="library-actions" aria-label="Book library">
         <button
@@ -484,7 +828,46 @@ function LibraryRail(props: LibraryRailProps) {
         >
           {props.importing ? "Adding..." : "Add EPUB"}
         </button>
+        <div class="library-controls">
+          <input
+            ref={(input) => {
+              librarySearchInput = input;
+            }}
+            aria-label="Search library"
+            type="search"
+            value={props.query}
+            placeholder="Search library"
+            onInput={(event) => props.onQueryChange(event.currentTarget.value)}
+          />
+          <select
+            aria-label="Library filter"
+            value={props.filter}
+            onChange={(event) =>
+              props.onFilterChange(event.currentTarget.value as LibraryBookFilter)
+            }
+          >
+            <option value="all">All</option>
+            <option value="in-progress">In progress</option>
+            <option value="bookmarked">Bookmarked</option>
+          </select>
+        </div>
         <Show when={props.notice}>{(notice) => <p class="library-notice">{notice()}</p>}</Show>
+        <Show when={props.searchResults.length > 0}>
+          <div class="library-search-results" role="list">
+            <For each={props.searchResults}>
+              {(result) => (
+                <button type="button" onClick={() => props.onOpenSearchResult(result)}>
+                  <span>{result.kind === "book" ? result.bookTitle : result.excerpt}</span>
+                  <small>
+                    {result.kind === "book"
+                      ? result.author
+                      : `${result.bookTitle} · ${result.chapterTitle ?? "Chapter"}`}
+                  </small>
+                </button>
+              )}
+            </For>
+          </div>
+        </Show>
         <div class="book-list" role="list">
           <button
             classList={{
@@ -608,7 +991,97 @@ function WordPopover(props: WordPopoverProps) {
   );
 }
 
-interface WordInspectorProps {
+interface ReaderInspectorProps {
+  tab: InspectorTab;
+  insight: WordInsight | null;
+  savedWords: SavedDictionaryEntry[];
+  readerSearchQuery: string;
+  readerSearchResults: ReaderSearchResult<ReaderSentenceView>[];
+  bookmarks: LibraryBookmarkDto[];
+  activeBookmark: LibraryBookmarkDto | null;
+  bookmarkNotice: string | null;
+  audioSettings: AudioSettings;
+  audioCacheStats: AudioCacheStatsDto | null;
+  audioCacheNotice: string | null;
+  exportNotice: string | null;
+  onTabChange: (tab: InspectorTab) => void;
+  onSaveWord: (insight: WordInsight) => void;
+  onForgetWord: (surface: string) => void;
+  onSelectSavedWord: (word: SavedDictionaryEntry) => void;
+  onReaderSearchQueryChange: (query: string) => void;
+  onReaderSearchResult: (result: ReaderSearchResult<ReaderSentenceView>) => void;
+  onReaderSearchInputReady: (input: HTMLInputElement) => void;
+  onToggleBookmark: () => void;
+  onOpenBookmark: (bookmark: LibraryBookmarkDto) => void;
+  onDeleteBookmark: (bookmarkId: string) => void;
+  onAudioSettingsChange: (settings: Partial<AudioSettings>) => void;
+  onRefreshCache: () => void;
+  onClearCache: () => void;
+  onExportBook: () => void;
+}
+
+function ReaderInspector(props: ReaderInspectorProps) {
+  return (
+    <aside class="inspector" aria-label="Reader tools">
+      <span class="inspector-label">Reader tools</span>
+      <div class="inspector-tabs" role="tablist" aria-label="Reader tool tabs">
+        <For each={["word", "search", "bookmarks", "settings"] as InspectorTab[]}>
+          {(tab) => (
+            <button
+              classList={{ active: props.tab === tab }}
+              type="button"
+              role="tab"
+              aria-selected={props.tab === tab}
+              onClick={() => props.onTabChange(tab)}
+            >
+              {tab[0].toLocaleUpperCase() + tab.slice(1)}
+            </button>
+          )}
+        </For>
+      </div>
+
+      {props.tab === "word" ? (
+        <WordPanel
+          insight={props.insight}
+          savedWords={props.savedWords}
+          onSave={props.onSaveWord}
+          onForget={props.onForgetWord}
+          onSelectSavedWord={props.onSelectSavedWord}
+        />
+      ) : props.tab === "search" ? (
+        <SearchPanel
+          query={props.readerSearchQuery}
+          results={props.readerSearchResults}
+          onQueryChange={props.onReaderSearchQueryChange}
+          onOpenResult={props.onReaderSearchResult}
+          onInputReady={props.onReaderSearchInputReady}
+        />
+      ) : props.tab === "bookmarks" ? (
+        <BookmarkPanel
+          bookmarks={props.bookmarks}
+          activeBookmark={props.activeBookmark}
+          notice={props.bookmarkNotice}
+          onToggleActive={props.onToggleBookmark}
+          onOpenBookmark={props.onOpenBookmark}
+          onDeleteBookmark={props.onDeleteBookmark}
+        />
+      ) : (
+        <SettingsPanel
+          audioSettings={props.audioSettings}
+          audioCacheStats={props.audioCacheStats}
+          audioCacheNotice={props.audioCacheNotice}
+          exportNotice={props.exportNotice}
+          onAudioSettingsChange={props.onAudioSettingsChange}
+          onRefreshCache={props.onRefreshCache}
+          onClearCache={props.onClearCache}
+          onExportBook={props.onExportBook}
+        />
+      )}
+    </aside>
+  );
+}
+
+interface WordPanelProps {
   insight: WordInsight | null;
   savedWords: SavedDictionaryEntry[];
   onSave: (insight: WordInsight) => void;
@@ -616,97 +1089,246 @@ interface WordInspectorProps {
   onSelectSavedWord: (word: SavedDictionaryEntry) => void;
 }
 
-function WordInspector(props: WordInspectorProps) {
+function WordPanel(props: WordPanelProps) {
   return (
-    <aside class="inspector" aria-label="Word insight">
-      <span class="inspector-label">Word insight</span>
-      <Show
-        when={props.insight}
-        fallback={
-          <>
-            <strong>No word selected</strong>
-            <SavedWordList words={props.savedWords} onSelect={props.onSelectSavedWord} />
-          </>
-        }
-      >
-        {(insight) => (
-          <>
-            <div class="inspector-heading">
-              <strong>{insight().surface}</strong>
-              <DictionaryStatus insight={insight()} />
-            </div>
-            <div class="dictionary-actions">
-              <Show when={insight().status === "ready" && !insight().saved}>
-                <button type="button" onClick={() => props.onSave(insight())}>
-                  Save
-                </button>
-              </Show>
-              <Show when={insight().saved}>
-                <button type="button" onClick={() => props.onForget(insight().surface)}>
-                  Forget
-                </button>
-              </Show>
-            </div>
-            <dl>
-              <Show when={insight().entry?.phonetic}>
+    <Show
+      when={props.insight}
+      fallback={
+        <>
+          <strong>No word selected</strong>
+          <SavedWordList words={props.savedWords} onSelect={props.onSelectSavedWord} />
+        </>
+      }
+    >
+      {(insight) => (
+        <>
+          <div class="inspector-heading">
+            <strong>{insight().surface}</strong>
+            <DictionaryStatus insight={insight()} />
+          </div>
+          <div class="dictionary-actions">
+            <Show when={insight().status === "ready" && !insight().saved}>
+              <button type="button" onClick={() => props.onSave(insight())}>
+                Save
+              </button>
+            </Show>
+            <Show when={insight().saved}>
+              <button type="button" onClick={() => props.onForget(insight().surface)}>
+                Forget
+              </button>
+            </Show>
+          </div>
+          <dl>
+            <Show when={insight().entry?.phonetic}>
+              <div>
+                <dt>Pronunciation</dt>
+                <dd>{insight().entry?.phonetic}</dd>
+              </div>
+            </Show>
+            <Show when={primaryDefinition(insight().entry)}>
+              {(definition) => (
                 <div>
-                  <dt>Pronunciation</dt>
-                  <dd>{insight().entry?.phonetic}</dd>
+                  <dt>Definition</dt>
+                  <dd>{definition().definition}</dd>
                 </div>
-              </Show>
-              <Show when={primaryDefinition(insight().entry)}>
-                {(definition) => (
-                  <div>
-                    <dt>Definition</dt>
-                    <dd>{definition().definition}</dd>
-                  </div>
-                )}
-              </Show>
-              <Show when={primaryDefinition(insight().entry)?.example}>
-                {(example) => (
-                  <div>
-                    <dt>Example</dt>
-                    <dd>{example()}</dd>
-                  </div>
-                )}
-              </Show>
-              <Show when={insight().entry?.meanings[0]?.partOfSpeech}>
-                {(partOfSpeech) => (
-                  <div>
-                    <dt>Type</dt>
-                    <dd>{partOfSpeech()}</dd>
-                  </div>
-                )}
-              </Show>
-              <Show when={primaryDefinition(insight().entry)?.synonyms.length}>
+              )}
+            </Show>
+            <Show when={primaryDefinition(insight().entry)?.example}>
+              {(example) => (
                 <div>
-                  <dt>Synonyms</dt>
-                  <dd>{primaryDefinition(insight().entry)?.synonyms.slice(0, 6).join(", ")}</dd>
+                  <dt>Example</dt>
+                  <dd>{example()}</dd>
                 </div>
-              </Show>
-              <Show when={insight().entry?.sourceUrl}>
-                {(sourceUrl) => (
-                  <div>
-                    <dt>Source</dt>
-                    <dd>
-                      <a href={sourceUrl()} target="_blank" rel="noreferrer">
-                        Dictionary
-                      </a>
-                    </dd>
-                  </div>
-                )}
-              </Show>
-              <Show when={insight().message != null && insight().entry == null}>
+              )}
+            </Show>
+            <Show when={insight().entry?.meanings[0]?.partOfSpeech}>
+              {(partOfSpeech) => (
                 <div>
-                  <dt>Status</dt>
-                  <dd>{insight().message}</dd>
+                  <dt>Type</dt>
+                  <dd>{partOfSpeech()}</dd>
                 </div>
-              </Show>
-            </dl>
-          </>
-        )}
+              )}
+            </Show>
+            <Show when={primaryDefinition(insight().entry)?.synonyms.length}>
+              <div>
+                <dt>Synonyms</dt>
+                <dd>{primaryDefinition(insight().entry)?.synonyms.slice(0, 6).join(", ")}</dd>
+              </div>
+            </Show>
+            <Show when={insight().entry?.sourceUrl}>
+              {(sourceUrl) => (
+                <div>
+                  <dt>Source</dt>
+                  <dd>
+                    <a href={sourceUrl()} target="_blank" rel="noreferrer">
+                      Dictionary
+                    </a>
+                  </dd>
+                </div>
+              )}
+            </Show>
+            <Show when={insight().message != null && insight().entry == null}>
+              <div>
+                <dt>Status</dt>
+                <dd>{insight().message}</dd>
+              </div>
+            </Show>
+          </dl>
+        </>
+      )}
+    </Show>
+  );
+}
+
+interface SearchPanelProps {
+  query: string;
+  results: ReaderSearchResult<ReaderSentenceView>[];
+  onQueryChange: (query: string) => void;
+  onOpenResult: (result: ReaderSearchResult<ReaderSentenceView>) => void;
+  onInputReady: (input: HTMLInputElement) => void;
+}
+
+function SearchPanel(props: SearchPanelProps) {
+  return (
+    <section class="inspector-panel" aria-label="Search this chapter">
+      <input
+        ref={props.onInputReady}
+        aria-label="Search this chapter"
+        type="search"
+        value={props.query}
+        placeholder="Search chapter"
+        onInput={(event) => props.onQueryChange(event.currentTarget.value)}
+      />
+      <Show when={props.results.length > 0} fallback={<p class="inspector-empty">No matches.</p>}>
+        <div class="result-list" role="list">
+          <For each={props.results}>
+            {(result) => (
+              <button type="button" onClick={() => props.onOpenResult(result)}>
+                <span>Sentence {result.sentence.index + 1}</span>
+                <small>{result.excerpt}</small>
+              </button>
+            )}
+          </For>
+        </div>
       </Show>
-    </aside>
+    </section>
+  );
+}
+
+interface BookmarkPanelProps {
+  bookmarks: LibraryBookmarkDto[];
+  activeBookmark: LibraryBookmarkDto | null;
+  notice: string | null;
+  onToggleActive: () => void;
+  onOpenBookmark: (bookmark: LibraryBookmarkDto) => void;
+  onDeleteBookmark: (bookmarkId: string) => void;
+}
+
+function BookmarkPanel(props: BookmarkPanelProps) {
+  return (
+    <section class="inspector-panel" aria-label="Bookmarks">
+      <button class="primary-tool-button" type="button" onClick={props.onToggleActive}>
+        {props.activeBookmark == null ? "Add bookmark" : "Remove bookmark"}
+      </button>
+      <Show when={props.notice}>{(notice) => <p class="library-notice">{notice()}</p>}</Show>
+      <Show
+        when={props.bookmarks.length > 0}
+        fallback={<p class="inspector-empty">No bookmarks in this book.</p>}
+      >
+        <div class="result-list" role="list">
+          <For each={props.bookmarks}>
+            {(bookmark) => (
+              <div class="bookmark-row">
+                <button type="button" onClick={() => props.onOpenBookmark(bookmark)}>
+                  <span>Sentence {bookmark.sentenceIndex + 1}</span>
+                  <small>{bookmark.text}</small>
+                </button>
+                <button
+                  class="mini-danger"
+                  type="button"
+                  aria-label="Delete bookmark"
+                  onClick={() => props.onDeleteBookmark(bookmark.id)}
+                >
+                  Delete
+                </button>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+    </section>
+  );
+}
+
+interface SettingsPanelProps {
+  audioSettings: AudioSettings;
+  audioCacheStats: AudioCacheStatsDto | null;
+  audioCacheNotice: string | null;
+  exportNotice: string | null;
+  onAudioSettingsChange: (settings: Partial<AudioSettings>) => void;
+  onRefreshCache: () => void;
+  onClearCache: () => void;
+  onExportBook: () => void;
+}
+
+function SettingsPanel(props: SettingsPanelProps) {
+  return (
+    <section class="inspector-panel" aria-label="Settings">
+      <label class="field-row">
+        <span>Speed</span>
+        <select
+          value={props.audioSettings.playbackRate.toString()}
+          onChange={(event) =>
+            props.onAudioSettingsChange({ playbackRate: Number(event.currentTarget.value) })
+          }
+        >
+          <option value="0.75">0.75x</option>
+          <option value="0.9">0.90x</option>
+          <option value="1">1.00x</option>
+          <option value="1.15">1.15x</option>
+          <option value="1.3">1.30x</option>
+          <option value="1.5">1.50x</option>
+        </select>
+      </label>
+      <label class="toggle-row">
+        <input
+          type="checkbox"
+          checked={props.audioSettings.autoAdvance}
+          onChange={(event) =>
+            props.onAudioSettingsChange({ autoAdvance: event.currentTarget.checked })
+          }
+        />
+        <span>Auto-advance</span>
+      </label>
+      <div class="tool-card">
+        <span class="inspector-section-title">Prepared audio</span>
+        <p>
+          {props.audioCacheStats == null
+            ? "Checking cache"
+            : `${props.audioCacheStats.sentenceCount} sentence${props.audioCacheStats.sentenceCount === 1 ? "" : "s"} · ${formatBytes(props.audioCacheStats.sizeBytes)}`}
+        </p>
+        <div class="dictionary-actions">
+          <button type="button" onClick={props.onRefreshCache}>
+            Refresh
+          </button>
+          <button type="button" onClick={props.onClearCache}>
+            Clear
+          </button>
+        </div>
+        <Show when={props.audioCacheNotice}>
+          {(notice) => <p class="library-notice">{notice()}</p>}
+        </Show>
+      </div>
+      <div class="tool-card">
+        <span class="inspector-section-title">Export</span>
+        <button class="primary-tool-button" type="button" onClick={props.onExportBook}>
+          Export book data
+        </button>
+        <Show when={props.exportNotice}>
+          {(notice) => <p class="library-notice">{notice()}</p>}
+        </Show>
+      </div>
+    </section>
   );
 }
 
@@ -780,6 +1402,7 @@ interface PlaybackRailProps {
   status: PlaybackStatus;
   narrationStatus: string;
   narrationNotice: string | null;
+  playbackRate: number;
   onPrevious: () => void;
   onToggle: () => void;
   onNext: () => void;
@@ -825,8 +1448,75 @@ function PlaybackRail(props: PlaybackRailProps) {
       <button class="icon-button" type="button" aria-label="Next sentence" onClick={props.onNext}>
         <NextIcon />
       </button>
-      <span class="mono">1.00x</span>
+      <span class="mono">{props.playbackRate.toFixed(2)}x</span>
     </footer>
+  );
+}
+
+function createSampleExport(
+  currentReader: ReaderView,
+  activeSentenceIndex: number,
+  currentBookmarks: LibraryBookmarkDto[]
+): BookExportDataDto {
+  return {
+    exportedAt: new Date().toISOString(),
+    book: currentReader.book,
+    chapters: [
+      {
+        id: currentReader.chapter.id,
+        title: currentReader.chapter.title,
+        index: 0,
+        sentences: currentReader.sentences.map((sentence) => ({
+          id: sentence.id,
+          index: sentence.index,
+          text: sentence.text
+        }))
+      }
+    ],
+    position: {
+      bookId: currentReader.book.id,
+      chapterId: currentReader.chapter.id,
+      sentenceIndex: activeSentenceIndex,
+      updatedAt: new Date().toISOString()
+    },
+    bookmarks: currentBookmarks
+  };
+}
+
+function downloadJson(fileName: string, data: unknown) {
+  const url = URL.createObjectURL(
+    new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
+  );
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function slugify(value: string): string {
+  return (
+    value
+      .normalize("NFKC")
+      .toLocaleLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "readex-book"
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT"
   );
 }
 

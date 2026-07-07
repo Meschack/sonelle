@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   advancePlayback,
   createPlaybackState,
+  finishSentencePlayback,
   movePlayback,
   playPlayback,
-  selectPlaybackSentence
+  searchReaderSentences,
+  selectPlaybackSentence,
+  sentenceMatchesQuery
 } from "./index";
 
 describe("reader playback", () => {
@@ -37,5 +40,35 @@ describe("reader playback", () => {
       activeSentenceIndex: 2,
       status: "paused"
     });
+  });
+
+  it("can pause after a sentence when auto-advance is off", () => {
+    expect(finishSentencePlayback({ activeSentenceIndex: 0, status: "playing" }, 3, false)).toEqual(
+      {
+        activeSentenceIndex: 1,
+        status: "paused"
+      }
+    );
+  });
+});
+
+describe("reader search", () => {
+  const sentences = [
+    { id: "sentence-1", index: 0, text: "The reader listens carefully." },
+    { id: "sentence-2", index: 1, text: "A bookmark keeps the place." }
+  ];
+
+  it("finds matching sentences with stable excerpts", () => {
+    expect(searchReaderSentences(sentences, "BOOKMARK")).toEqual([
+      {
+        sentence: sentences[1],
+        excerpt: "A bookmark keeps the place."
+      }
+    ]);
+  });
+
+  it("reports whether a sentence matches a query", () => {
+    expect(sentenceMatchesQuery(sentences[0], "listens")).toBe(true);
+    expect(sentenceMatchesQuery(sentences[0], "")).toBe(false);
   });
 });

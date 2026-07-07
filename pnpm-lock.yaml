@@ -26,6 +26,9 @@ importers:
       '@readex/learning':
         specifier: workspace:*
         version: link:../../packages/learning
+      '@readex/library':
+        specifier: workspace:*
+        version: link:../../packages/library
       '@readex/reader':
         specifier: workspace:*
         version: link:../../packages/reader

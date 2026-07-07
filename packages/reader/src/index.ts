@@ -15,6 +15,17 @@ export interface ReaderPlaybackState {
   status: PlaybackStatus;
 }
 
+export interface SearchableSentence {
+  id: string;
+  index: number;
+  text: string;
+}
+
+export interface ReaderSearchResult<TSentence extends SearchableSentence = SearchableSentence> {
+  sentence: TSentence;
+  excerpt: string;
+}
+
 export function highlightSentence(sentenceId: string | null): HighlightState {
   return { activeSentenceId: sentenceId };
 }
@@ -94,8 +105,62 @@ export function selectPlaybackSentence(
   };
 }
 
+export function finishSentencePlayback(
+  state: ReaderPlaybackState,
+  sentenceCount: number,
+  autoAdvance: boolean
+): ReaderPlaybackState {
+  const advanced = advancePlayback(state, sentenceCount);
+  if (autoAdvance || advanced.status === "ended") return advanced;
+
+  return {
+    ...advanced,
+    status: "paused"
+  };
+}
+
+export function searchReaderSentences<TSentence extends SearchableSentence>(
+  sentences: TSentence[],
+  query: string
+): ReaderSearchResult<TSentence>[] {
+  const normalizedQuery = normalizeReaderSearchQuery(query);
+  if (normalizedQuery.length === 0) return [];
+
+  return sentences
+    .filter((sentence) => normalizeReaderSearchQuery(sentence.text).includes(normalizedQuery))
+    .map((sentence) => ({
+      sentence,
+      excerpt: createSearchExcerpt(sentence.text, normalizedQuery)
+    }));
+}
+
+export function sentenceMatchesQuery(sentence: SearchableSentence, query: string): boolean {
+  const normalizedQuery = normalizeReaderSearchQuery(query);
+  return (
+    normalizedQuery.length > 0 &&
+    normalizeReaderSearchQuery(sentence.text).includes(normalizedQuery)
+  );
+}
+
 export function createSentenceId(bookId: string, chapterId: string, sentenceIndex: number): string {
   return `${bookId}:${chapterId}:sentence-${sentenceIndex + 1}`;
+}
+
+function normalizeReaderSearchQuery(query: string): string {
+  return query.normalize("NFKC").trim().toLocaleLowerCase().replace(/\s+/g, " ");
+}
+
+function createSearchExcerpt(text: string, normalizedQuery: string): string {
+  const normalizedText = normalizeReaderSearchQuery(text);
+  const matchIndex = normalizedText.indexOf(normalizedQuery);
+  if (matchIndex === -1 || text.length <= 120) return text;
+
+  const start = Math.max(0, matchIndex - 44);
+  const end = Math.min(text.length, matchIndex + normalizedQuery.length + 68);
+  const prefix = start > 0 ? "..." : "";
+  const suffix = end < text.length ? "..." : "";
+
+  return `${prefix}${text.slice(start, end).trim()}${suffix}`;
 }
 
 function clampSentenceIndex(sentenceIndex: number, sentenceCount: number): number {

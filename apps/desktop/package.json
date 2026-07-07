@@ -15,6 +15,7 @@
   "dependencies": {
     "@readex/learning": "workspace:*",
     "@readex/audio": "workspace:*",
+    "@readex/library": "workspace:*",
     "@readex/reader": "workspace:*",
     "@readex/text": "workspace:*",
     "@tauri-apps/api": "^2",

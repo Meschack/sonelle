@@ -37,6 +37,13 @@ pub struct PreparedSentenceAudio {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioCacheStats {
+    pub sentence_count: usize,
+    pub size_bytes: u64,
+}
+
 trait SpeechAdapter {
     fn prepare(
         &self,
@@ -90,6 +97,20 @@ pub fn speak_prepared_narration(
 
 pub fn stop_narration() -> Result<(), String> {
     Ok(())
+}
+
+pub fn audio_cache_summary(app: &AppHandle) -> Result<AudioCacheStats, String> {
+    summarize_audio_cache_at(&audio_cache_root(app)?)
+}
+
+pub fn clear_audio_cache(app: &AppHandle) -> Result<AudioCacheStats, String> {
+    let root = audio_cache_root(app)?;
+
+    if root.exists() {
+        fs::remove_dir_all(&root).map_err(|_| "We couldn't clear prepared audio.".to_string())?;
+    }
+
+    summarize_audio_cache_at(&root)
 }
 
 struct LocalSpeechAdapter;
@@ -330,6 +351,54 @@ impl SentenceAudioCache {
     }
 }
 
+fn audio_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("audio"))
+        .map_err(|_| "We couldn't open prepared audio.".to_string())
+}
+
+fn summarize_audio_cache_at(root: &Path) -> Result<AudioCacheStats, String> {
+    if !root.exists() {
+        return Ok(AudioCacheStats {
+            sentence_count: 0,
+            size_bytes: 0,
+        });
+    }
+
+    let mut pending = vec![root.to_path_buf()];
+    let mut sentence_count = 0;
+    let mut size_bytes = 0;
+
+    while let Some(dir) = pending.pop() {
+        let entries =
+            fs::read_dir(&dir).map_err(|_| "We couldn't inspect prepared audio.".to_string())?;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+
+            let metadata = entry
+                .metadata()
+                .map_err(|_| "We couldn't inspect prepared audio.".to_string())?;
+
+            size_bytes += metadata.len();
+            if path.file_name().is_some_and(|name| name == "sentence.wav") {
+                sentence_count += 1;
+            }
+        }
+    }
+
+    Ok(AudioCacheStats {
+        sentence_count,
+        size_bytes,
+    })
+}
+
 fn wav_data_url(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path).map_err(|_| "We couldn't load prepared narration.".to_string())?;
     Ok(format!("data:audio/wav;base64,{}", STANDARD.encode(bytes)))
@@ -485,8 +554,8 @@ mod tests {
     use chrono::Utc;
 
     use super::{
-        piper_model_exists, piper_voice_exists, FakeSpeechAdapter, LocalSpeechAdapter,
-        PiperRuntime, SentenceAudioCache, SentenceAudioRequest, SpeechAdapter,
+        piper_model_exists, piper_voice_exists, summarize_audio_cache_at, FakeSpeechAdapter,
+        LocalSpeechAdapter, PiperRuntime, SentenceAudioCache, SentenceAudioRequest, SpeechAdapter,
     };
 
     #[test]
@@ -584,6 +653,23 @@ mod tests {
         fs::write(temp_dir.join("voice.onnx.json"), b"{}").expect("config should be written");
 
         assert!(piper_model_exists(&model));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn summarizes_audio_cache_files() {
+        let temp_dir = temp_audio_dir();
+        let sentence_dir = temp_dir.join("audio/cache-key");
+        fs::create_dir_all(&sentence_dir).expect("cache dir should be created");
+        fs::write(sentence_dir.join("sentence.wav"), b"audio")
+            .expect("audio file should be written");
+
+        let stats =
+            summarize_audio_cache_at(&temp_dir.join("audio")).expect("cache should summarize");
+
+        assert_eq!(stats.sentence_count, 1);
+        assert_eq!(stats.size_bytes, 5);
 
         fs::remove_dir_all(temp_dir).ok();
     }

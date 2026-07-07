@@ -16,12 +16,19 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             app_status,
+            commands::clear_prepared_audio_cache,
+            commands::delete_bookmark,
+            commands::export_book_data,
+            commands::get_audio_cache_stats,
             commands::import_epub,
+            commands::list_bookmarks,
             commands::list_books,
             commands::open_book,
             commands::prepare_sentence_audio,
             commands::play_sentence_audio,
+            commands::save_bookmark,
             commands::save_reading_position,
+            commands::search_library,
             commands::stop_sentence_audio
         ])
         .run(tauri::generate_context!())

@@ -20,6 +20,11 @@ export interface SentenceNarrationRequest extends SentenceRef {
   text: string;
 }
 
+export interface AudioSettings {
+  playbackRate: number;
+  autoAdvance: boolean;
+}
+
 export interface NarrationGateway {
   prepareSentenceAudio(request: SentenceNarrationRequest): Promise<SentenceNarration>;
   playPreparedSentenceAudio(
@@ -61,9 +66,41 @@ export class FakeNarrationGateway implements NarrationGateway {
   }
 }
 
+export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
+  playbackRate: 1,
+  autoAdvance: true
+};
+
+export function createAudioSettings(input: Partial<AudioSettings> = {}): AudioSettings {
+  return {
+    playbackRate: clampPlaybackRate(input.playbackRate ?? DEFAULT_AUDIO_SETTINGS.playbackRate),
+    autoAdvance: input.autoAdvance ?? DEFAULT_AUDIO_SETTINGS.autoAdvance
+  };
+}
+
+export function serializeAudioSettings(settings: AudioSettings): string {
+  return JSON.stringify(createAudioSettings(settings));
+}
+
+export function parseAudioSettings(value: string | null): AudioSettings {
+  if (value == null) return DEFAULT_AUDIO_SETTINGS;
+
+  try {
+    const parsed = JSON.parse(value) as Partial<AudioSettings>;
+    return createAudioSettings(parsed);
+  } catch {
+    return DEFAULT_AUDIO_SETTINGS;
+  }
+}
+
 export function estimateSentenceDurationSec(text: string): number {
   const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
   return Math.max(1.1, Math.min(12, wordCount * 0.34 + 0.5));
+}
+
+function clampPlaybackRate(rate: number): number {
+  if (!Number.isFinite(rate)) return DEFAULT_AUDIO_SETTINGS.playbackRate;
+  return Math.min(1.5, Math.max(0.75, rate));
 }
 
 function createSilentWavDataUrl(durationSec: number): string {
