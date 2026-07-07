@@ -9,13 +9,18 @@
 
 Tauri's scaffold reported missing Linux desktop dependencies on this machine. Install the platform prerequisites from the official Tauri docs before running the native desktop shell.
 
-On Debian/Ubuntu-like systems, the missing `cargo check` dependency reported here was:
+On Debian/Ubuntu-like systems, use the full Tauri prerequisite set:
 
 ```bash
-sudo apt install libdbus-1-dev pkg-config
+sudo apt update
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 ```
 
-The Tauri prerequisite set may require more packages, including WebKitGTK and librsvg development packages.
+If installing dependencies piecemeal, the direct errors seen on this machine were `dbus-1`, `glib-2.0`, and `gdk-3.0`. Those are provided by development packages such as:
+
+```bash
+sudo apt install libdbus-1-dev libglib2.0-dev libgtk-3-dev pkg-config
+```
 
 ## Commands
 
@@ -27,6 +32,8 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm check
+pnpm check:native
+cargo check
 ```
 
 ## TUI
@@ -36,7 +43,8 @@ The project includes a small local TUI at `scripts/dev-tui.mjs`. It reads `.dev-
 - desktop app
 - web renderer
 - tests
-- typecheck
+- full JS/TS check
+- native Rust/Tauri check
 
 Run it with:
 
@@ -61,10 +69,14 @@ Current verified commands:
 - `pnpm test`
 - `pnpm build`
 - `pnpm check`
+- `pnpm check:native`
 - `cargo fmt --check`
-
-Current blocked command:
-
 - `cargo check`
 
-Reason: missing Linux system package `dbus-1` according to `pkg-config`.
+Current blocked commands:
+
+- None known after Linux Tauri prerequisites are installed.
+
+Run this from the repository root. The root `Cargo.toml` is a workspace that points to `apps/desktop/src-tauri`.
+
+If native checks report missing system packages through `pkg-config`, install the Tauri prerequisite set above and retry.

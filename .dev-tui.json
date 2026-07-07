@@ -21,8 +21,14 @@
     {
       "name": "CHECK",
       "dir": ".",
-      "cmd": "pnpm typecheck",
+      "cmd": "pnpm check",
       "color": "yellow"
+    },
+    {
+      "name": "NATIVE",
+      "dir": ".",
+      "cmd": "pnpm check:native",
+      "color": "white"
     }
   ]
 }
