@@ -20,6 +20,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@readex/audio':
+        specifier: workspace:*
+        version: link:../../packages/audio
       '@readex/learning':
         specifier: workspace:*
         version: link:../../packages/learning

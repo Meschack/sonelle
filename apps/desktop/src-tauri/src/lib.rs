@@ -1,3 +1,4 @@
+mod audio;
 mod commands;
 mod epub_import;
 mod storage;
@@ -18,7 +19,10 @@ pub fn run() {
             commands::import_epub,
             commands::list_books,
             commands::open_book,
-            commands::save_reading_position
+            commands::prepare_sentence_audio,
+            commands::play_sentence_audio,
+            commands::save_reading_position,
+            commands::stop_sentence_audio
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

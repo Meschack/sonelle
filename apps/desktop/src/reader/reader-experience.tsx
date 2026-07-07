@@ -9,8 +9,10 @@ import {
   selectPlaybackSentence,
   type PlaybackStatus
 } from "@readex/reader";
+import type { SentenceNarration, SentenceNarrationRequest } from "@readex/audio";
 import { createWordInsight, type WordInsight } from "@readex/learning";
 import type { ReaderTextToken } from "@readex/text";
+import { createNarrationRepository, toFriendlyNarrationError } from "../audio/narration-repository";
 import {
   createBookRepository,
   toFriendlyLibraryError,
@@ -24,8 +26,6 @@ import {
   type ReaderView
 } from "./reader-view";
 
-const playbackTickMs = 2600;
-
 interface SelectedWord {
   sentenceId: string;
   tokenIndex: number;
@@ -34,18 +34,27 @@ interface SelectedWord {
 
 export function ReaderExperience() {
   const repository = createBookRepository();
+  const narrationRepository = createNarrationRepository();
   const sampleReader = buildFixtureReaderView();
   const [reader, setReader] = createSignal<ReaderView>(sampleReader);
   const [libraryBooks, setLibraryBooks] = createSignal<LibraryBookSummary[]>([]);
   const [libraryNotice, setLibraryNotice] = createSignal<string | null>(null);
   const [isImporting, setIsImporting] = createSignal(false);
   const [playback, setPlayback] = createSignal(createPlaybackState());
+  const [activeNarration, setActiveNarration] = createSignal<SentenceNarration | null>(null);
+  const [isPreparingNarration, setIsPreparingNarration] = createSignal(false);
+  const [narrationNotice, setNarrationNotice] = createSignal<string | null>(null);
   const [selectedWord, setSelectedWord] = createSignal<SelectedWord | null>(null);
+  let activeHtmlAudio: HTMLAudioElement | null = null;
+  let narrationRun = 0;
 
   const activeSentence = createMemo(() => reader().sentences[playback().activeSentenceIndex]);
   const highlight = createMemo(() => highlightSentence(activeSentence()?.id ?? null));
   const activeWordInsight = createMemo(() => selectedWord()?.insight ?? null);
   const statusLabel = createMemo(() => {
+    if (isPreparingNarration()) return "Preparing audio";
+    if (narrationNotice() != null) return "Needs attention";
+
     switch (playback().status) {
       case "playing":
         return "Listening";
@@ -57,19 +66,46 @@ export function ReaderExperience() {
         return reader().source === "sample" ? "Sample reader" : "Ready to listen";
     }
   });
+  const narrationStatusLabel = createMemo(() => {
+    if (isPreparingNarration()) return "Preparing audio";
+    if (narrationNotice() != null) return "Needs attention";
+    if (activeNarration()?.readiness === "ready") return "Ready to listen";
+
+    return reader().source === "sample" ? "Sample narration" : "Ready to listen";
+  });
 
   onMount(() => {
     void refreshLibrary();
   });
 
   createEffect(() => {
-    if (playback().status !== "playing") return;
+    const currentPlayback = playback();
+    const sentence = activeSentence();
+    const currentReader = reader();
 
-    const timer = window.setInterval(() => {
-      setPlayback((current) => advancePlayback(current, reader().sentences.length));
-    }, playbackTickMs);
+    if (currentPlayback.status !== "playing" || sentence == null) return;
 
-    onCleanup(() => window.clearInterval(timer));
+    const runId = ++narrationRun;
+    const request: SentenceNarrationRequest = {
+      bookId: currentReader.book.id,
+      chapterId: currentReader.chapter.id,
+      sentenceId: sentence.id,
+      sentenceIndex: sentence.index,
+      text: sentence.text
+    };
+
+    setIsPreparingNarration(true);
+    setNarrationNotice(null);
+
+    void playSentenceNarration(request, runId, currentReader.sentences.length);
+
+    onCleanup(() => {
+      narrationRun += 1;
+      setIsPreparingNarration(false);
+      activeHtmlAudio?.pause();
+      activeHtmlAudio = null;
+      void narrationRepository.stopPreparedSentenceAudio().catch(() => undefined);
+    });
   });
 
   createEffect(() => {
@@ -126,15 +162,84 @@ export function ReaderExperience() {
 
   const activateReader = (nextReader: ReaderView) => {
     setReader(nextReader);
-    setPlayback((current) =>
+    setPlayback(() =>
       selectPlaybackSentence(
-        { activeSentenceIndex: nextReader.initialSentenceIndex, status: current.status },
+        { activeSentenceIndex: nextReader.initialSentenceIndex, status: "idle" },
         nextReader.sentences.length,
         nextReader.initialSentenceIndex
       )
     );
+    setActiveNarration(null);
+    setNarrationNotice(null);
+    setIsPreparingNarration(false);
     setSelectedWord(null);
   };
+
+  const playSentenceNarration = async (
+    request: SentenceNarrationRequest,
+    runId: number,
+    sentenceCount: number
+  ) => {
+    try {
+      const narration = await narrationRepository.prepareSentenceAudio(request);
+      if (runId !== narrationRun) return;
+
+      setActiveNarration(narration);
+      setIsPreparingNarration(false);
+
+      if (narration.readiness !== "ready") {
+        setNarrationNotice(narration.message ?? "Narration needs attention.");
+        setPlayback((current) => pausePlayback(current));
+        return;
+      }
+
+      if (narration.playbackMode === "html-audio" && narration.sourceUrl != null) {
+        await playHtmlAudio(narration.sourceUrl, runId);
+      } else {
+        await narrationRepository.playPreparedSentenceAudio(request, narration);
+      }
+
+      if (runId !== narrationRun) return;
+      setPlayback((current) => advancePlayback(current, sentenceCount));
+    } catch (error) {
+      if (runId !== narrationRun) return;
+
+      setIsPreparingNarration(false);
+      setNarrationNotice(toFriendlyNarrationError(error));
+      setPlayback((current) => pausePlayback(current));
+    }
+  };
+
+  const playHtmlAudio = (sourceUrl: string, runId: number): Promise<void> =>
+    new Promise((resolve, reject) => {
+      activeHtmlAudio?.pause();
+
+      const audio = new Audio(sourceUrl);
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+
+      activeHtmlAudio = audio;
+      audio.onended = finish;
+      audio.onpause = () => {
+        if (runId !== narrationRun) finish();
+      };
+      audio.onerror = () => fail(new Error("Narration needs attention. Please try again."));
+      audio.play().catch(fail);
+
+      if (runId !== narrationRun) {
+        audio.pause();
+        finish();
+      }
+    });
 
   const refreshLibrary = async () => {
     try {
@@ -250,6 +355,8 @@ export function ReaderExperience() {
         activeIndex={playback().activeSentenceIndex}
         sentenceCount={reader().sentences.length}
         status={playback().status}
+        narrationStatus={narrationStatusLabel()}
+        narrationNotice={narrationNotice()}
         onPrevious={() => moveSentence(-1)}
         onToggle={togglePlayback}
         onNext={() => moveSentence(1)}
@@ -445,6 +552,8 @@ interface PlaybackRailProps {
   activeIndex: number;
   sentenceCount: number;
   status: PlaybackStatus;
+  narrationStatus: string;
+  narrationNotice: string | null;
   onPrevious: () => void;
   onToggle: () => void;
   onNext: () => void;
@@ -460,6 +569,9 @@ function PlaybackRail(props: PlaybackRailProps) {
         <span>{props.chapterTitle}</span>
         <span class="mono">
           {props.activeIndex + 1} / {props.sentenceCount}
+        </span>
+        <span classList={{ "narration-status": true, attention: props.narrationNotice != null }}>
+          {props.narrationStatus}
         </span>
       </div>
       <div class="progress-track" aria-hidden="true">

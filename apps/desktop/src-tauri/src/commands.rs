@@ -1,5 +1,9 @@
 use tauri::AppHandle;
 
+use crate::audio::{
+    prepare_narration, speak_prepared_narration, stop_narration, PreparedSentenceAudio,
+    SentenceAudioRequest,
+};
 use crate::epub_import::import_epub_file;
 use crate::storage::{
     LibraryBookView, ReaderDocumentView, ReadexStore, SaveReadingPositionRequest,
@@ -19,6 +23,24 @@ pub fn list_books(app: AppHandle) -> Result<Vec<LibraryBookView>, String> {
 #[tauri::command]
 pub fn open_book(app: AppHandle, book_id: String) -> Result<ReaderDocumentView, String> {
     ReadexStore::open(&app)?.open_book(&book_id)
+}
+
+#[tauri::command]
+pub fn prepare_sentence_audio(
+    app: AppHandle,
+    request: SentenceAudioRequest,
+) -> Result<PreparedSentenceAudio, String> {
+    prepare_narration(&app, request)
+}
+
+#[tauri::command]
+pub fn play_sentence_audio(app: AppHandle, request: SentenceAudioRequest) -> Result<(), String> {
+    speak_prepared_narration(&app, request)
+}
+
+#[tauri::command]
+pub fn stop_sentence_audio() -> Result<(), String> {
+    stop_narration()
 }
 
 #[tauri::command]
