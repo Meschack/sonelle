@@ -18,6 +18,7 @@ import {
 import { bookmarkedBookIds, filterLibraryBooks, type LibraryBookFilter } from "@readex/library";
 import {
   calculateReaderProgress,
+  calculateSentenceRenderWindow,
   createPlaybackState,
   finishSentencePlayback,
   highlightSentence,
@@ -138,20 +139,12 @@ export function ReaderExperience() {
   const activeSentence = createMemo(() => reader().sentences[playback().activeSentenceIndex]);
   const highlight = createMemo(() => highlightSentence(activeSentence()?.id ?? null));
   const visibleSentenceRange = createMemo(() => {
-    const sentenceCount = reader().sentences.length;
-    const activeIndex =
-      sentenceCount === 0
-        ? 0
-        : Math.max(0, Math.min(playback().activeSentenceIndex, sentenceCount - 1));
-    const start = Math.max(0, activeIndex - renderedSentenceLead);
-    const end = Math.min(sentenceCount, activeIndex + renderedSentenceTrail + 1);
-
-    return {
-      end,
-      hiddenAfter: sentenceCount - end,
-      hiddenBefore: start,
-      start
-    };
+    return calculateSentenceRenderWindow({
+      activeSentenceIndex: playback().activeSentenceIndex,
+      leadCount: renderedSentenceLead,
+      sentenceCount: reader().sentences.length,
+      trailCount: renderedSentenceTrail
+    });
   });
   const visibleSentences = createMemo(() => {
     const range = visibleSentenceRange();
