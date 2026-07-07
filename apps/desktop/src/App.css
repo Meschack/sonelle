@@ -290,6 +290,18 @@ button {
   font-size: 15px;
 }
 
+.popover-state {
+  color: rgba(255, 253, 250, 0.68);
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.popover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .word-popover button {
   background: rgba(255, 255, 255, 0.12);
   border: 0;
@@ -298,6 +310,11 @@ button {
   justify-self: start;
   min-height: 28px;
   padding: 0 10px;
+}
+
+.word-popover button.active {
+  background: #fffdfa;
+  color: #171713;
 }
 
 .inspector {
@@ -317,6 +334,11 @@ button {
 .inspector p {
   color: #6d6a60;
   line-height: 1.6;
+}
+
+.inspector-heading {
+  display: grid;
+  gap: 10px;
 }
 
 .inspector dl {
@@ -343,13 +365,104 @@ button {
   margin: 0;
 }
 
+.learning-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.learning-actions button,
+.saved-word-row {
+  background: #ffffff;
+  border: 1px solid #dedbd1;
+  border-radius: 8px;
+  color: #171713;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.learning-actions button.active {
+  background: #245bff;
+  border-color: #245bff;
+  color: #ffffff;
+}
+
 .learning-state {
   background: rgba(36, 91, 255, 0.1);
   border-radius: 999px;
   color: #1744ca;
   display: inline-flex;
+  justify-self: start;
   font-size: 13px;
   padding: 6px 10px;
+  text-transform: capitalize;
+}
+
+.learning-state.muted {
+  background: rgba(109, 106, 96, 0.12);
+  color: #6d6a60;
+}
+
+.learning-field {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.learning-field span,
+.inspector-section-title {
+  color: #6d6a60;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.learning-field textarea {
+  background: #ffffff;
+  border: 1px solid #dedbd1;
+  border-radius: 8px;
+  color: #171713;
+  font: inherit;
+  line-height: 1.45;
+  max-width: 100%;
+  min-height: 86px;
+  padding: 10px;
+  resize: vertical;
+}
+
+.learning-field textarea:focus-visible,
+.learning-actions button:focus-visible,
+.saved-word-row:focus-visible {
+  border-color: #245bff;
+  box-shadow: 0 0 0 3px rgba(36, 91, 255, 0.16);
+  outline: none;
+}
+
+.inspector-empty {
+  color: #6d6a60;
+}
+
+.saved-word-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.saved-word-row {
+  display: grid;
+  gap: 2px;
+  min-height: 46px;
+  text-align: left;
+}
+
+.saved-word-row span {
+  font-weight: 650;
+}
+
+.saved-word-row small {
+  color: #6d6a60;
   text-transform: capitalize;
 }
 

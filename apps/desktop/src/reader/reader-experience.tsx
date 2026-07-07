@@ -10,9 +10,23 @@ import {
   type PlaybackStatus
 } from "@readex/reader";
 import type { SentenceNarration, SentenceNarrationRequest } from "@readex/audio";
-import { createWordInsight, type WordInsight } from "@readex/learning";
+import {
+  createLearningNotebook,
+  createWordInsight,
+  forgetWord,
+  listSavedWords,
+  markWordState,
+  saveWord,
+  updateWordExample,
+  updateWordNote,
+  type LearningNotebook,
+  type SavedWord,
+  type WordInsight,
+  type WordLearningState
+} from "@readex/learning";
 import type { ReaderTextToken } from "@readex/text";
 import { createNarrationRepository, toFriendlyNarrationError } from "../audio/narration-repository";
+import { createLearningRepository } from "../learning/learning-repository";
 import {
   createBookRepository,
   toFriendlyLibraryError,
@@ -29,12 +43,13 @@ import {
 interface SelectedWord {
   sentenceId: string;
   tokenIndex: number;
-  insight: WordInsight;
+  surface: string;
 }
 
 export function ReaderExperience() {
   const repository = createBookRepository();
   const narrationRepository = createNarrationRepository();
+  const learningRepository = createLearningRepository();
   const sampleReader = buildFixtureReaderView();
   const [reader, setReader] = createSignal<ReaderView>(sampleReader);
   const [libraryBooks, setLibraryBooks] = createSignal<LibraryBookSummary[]>([]);
@@ -44,13 +59,21 @@ export function ReaderExperience() {
   const [activeNarration, setActiveNarration] = createSignal<SentenceNarration | null>(null);
   const [isPreparingNarration, setIsPreparingNarration] = createSignal(false);
   const [narrationNotice, setNarrationNotice] = createSignal<string | null>(null);
+  const [learningNotebook, setLearningNotebook] =
+    createSignal<LearningNotebook>(createLearningNotebook());
   const [selectedWord, setSelectedWord] = createSignal<SelectedWord | null>(null);
   let activeHtmlAudio: HTMLAudioElement | null = null;
   let narrationRun = 0;
 
   const activeSentence = createMemo(() => reader().sentences[playback().activeSentenceIndex]);
   const highlight = createMemo(() => highlightSentence(activeSentence()?.id ?? null));
-  const activeWordInsight = createMemo(() => selectedWord()?.insight ?? null);
+  const activeWordInsight = createMemo(() => {
+    const selection = selectedWord();
+    if (selection == null) return null;
+
+    return createWordInsight(selection.surface, learningNotebook());
+  });
+  const savedWords = createMemo(() => listSavedWords(learningNotebook()));
   const statusLabel = createMemo(() => {
     if (isPreparingNarration()) return "Preparing audio";
     if (narrationNotice() != null) return "Needs attention";
@@ -75,6 +98,7 @@ export function ReaderExperience() {
   });
 
   onMount(() => {
+    setLearningNotebook(learningRepository.loadNotebook());
     void refreshLibrary();
   });
 
@@ -151,7 +175,15 @@ export function ReaderExperience() {
     setSelectedWord({
       sentenceId: sentence.id,
       tokenIndex: token.index,
-      insight: createWordInsight(token.text)
+      surface: token.text
+    });
+  };
+
+  const selectSavedWord = (word: SavedWord) => {
+    setSelectedWord({
+      sentenceId: "saved-words",
+      tokenIndex: -1,
+      surface: word.surface
     });
   };
 
@@ -159,6 +191,31 @@ export function ReaderExperience() {
     token.kind === "word" &&
     selectedWord()?.sentenceId === sentenceId &&
     selectedWord()?.tokenIndex === token.index;
+
+  const persistLearningNotebook = (nextNotebook: LearningNotebook) => {
+    setLearningNotebook(nextNotebook);
+    learningRepository.saveNotebook(nextNotebook);
+  };
+
+  const saveLearningWord = (surface: string) => {
+    persistLearningNotebook(saveWord(learningNotebook(), surface));
+  };
+
+  const markLearningWord = (surface: string, state: Exclude<WordLearningState, "unknown">) => {
+    persistLearningNotebook(markWordState(learningNotebook(), surface, state));
+  };
+
+  const changeWordNote = (surface: string, note: string) => {
+    persistLearningNotebook(updateWordNote(learningNotebook(), surface, note));
+  };
+
+  const changeWordExample = (surface: string, example: string) => {
+    persistLearningNotebook(updateWordExample(learningNotebook(), surface, example));
+  };
+
+  const forgetLearningWord = (surface: string) => {
+    persistLearningNotebook(forgetWord(learningNotebook(), surface));
+  };
 
   const activateReader = (nextReader: ReaderView) => {
     setReader(nextReader);
@@ -336,8 +393,11 @@ export function ReaderExperience() {
                         token={token}
                         sentence={sentence}
                         selected={isSelectedWord(sentence.id, token)}
+                        insight={isSelectedWord(sentence.id, token) ? activeWordInsight() : null}
                         onSelect={selectWord}
                         onClear={() => setSelectedWord(null)}
+                        onSave={saveLearningWord}
+                        onMark={markLearningWord}
                       />
                     )}
                   </For>
@@ -348,7 +408,16 @@ export function ReaderExperience() {
         </div>
       </section>
 
-      <WordInspector insight={activeWordInsight()} />
+      <WordInspector
+        insight={activeWordInsight()}
+        savedWords={savedWords()}
+        onSave={saveLearningWord}
+        onMark={markLearningWord}
+        onNoteChange={changeWordNote}
+        onExampleChange={changeWordExample}
+        onForget={forgetLearningWord}
+        onSelectSavedWord={selectSavedWord}
+      />
 
       <PlaybackRail
         chapterTitle={reader().chapter.title}
@@ -436,11 +505,14 @@ interface SentenceTokenProps {
   token: ReaderTextToken;
   sentence: ReaderSentenceView;
   selected: boolean;
+  insight: WordInsight | null;
   onSelect: (
     sentence: ReaderSentenceView,
     token: Extract<ReaderTextToken, { kind: "word" }>
   ) => void;
   onClear: () => void;
+  onSave: (surface: string) => void;
+  onMark: (surface: string, state: Exclude<WordLearningState, "unknown">) => void;
 }
 
 function SentenceToken(props: SentenceTokenProps) {
@@ -464,8 +536,15 @@ function SentenceToken(props: SentenceTokenProps) {
       >
         {token.text}
       </button>
-      <Show when={props.selected}>
-        <WordPopover insight={createWordInsight(token.text)} onClear={props.onClear} />
+      <Show when={props.selected ? props.insight : null}>
+        {(insight) => (
+          <WordPopover
+            insight={insight()}
+            onClear={props.onClear}
+            onSave={props.onSave}
+            onMark={props.onMark}
+          />
+        )}
       </Show>
     </span>
   );
@@ -474,13 +553,47 @@ function SentenceToken(props: SentenceTokenProps) {
 interface WordPopoverProps {
   insight: WordInsight;
   onClear: () => void;
+  onSave: (surface: string) => void;
+  onMark: (surface: string, state: Exclude<WordLearningState, "unknown">) => void;
 }
 
 function WordPopover(props: WordPopoverProps) {
+  const runAction = (event: MouseEvent, action: () => void) => {
+    event.stopPropagation();
+    action();
+  };
+
   return (
     <span class="word-popover" role="dialog" aria-label={`Insight for ${props.insight.surface}`}>
       <strong>{props.insight.surface}</strong>
       <span>{props.insight.definition}</span>
+      <span class="popover-state">{props.insight.saved ? props.insight.state : "not saved"}</span>
+      <span class="popover-actions">
+        <Show when={!props.insight.saved}>
+          <button
+            type="button"
+            onClick={(event) => runAction(event, () => props.onSave(props.insight.surface))}
+          >
+            Save
+          </button>
+        </Show>
+        <button
+          classList={{ active: props.insight.saved && props.insight.state === "learning" }}
+          type="button"
+          onClick={(event) =>
+            runAction(event, () => props.onMark(props.insight.surface, "learning"))
+          }
+        >
+          Learning
+        </button>
+        <button
+          classList={{ active: props.insight.saved && props.insight.state === "known" }}
+          type="button"
+          onClick={(event) => runAction(event, () => props.onMark(props.insight.surface, "known"))}
+        >
+          Known
+        </button>
+      </span>
       <button
         type="button"
         aria-label="Close word insight"
@@ -497,6 +610,13 @@ function WordPopover(props: WordPopoverProps) {
 
 interface WordInspectorProps {
   insight: WordInsight | null;
+  savedWords: SavedWord[];
+  onSave: (surface: string) => void;
+  onMark: (surface: string, state: Exclude<WordLearningState, "unknown">) => void;
+  onNoteChange: (surface: string, note: string) => void;
+  onExampleChange: (surface: string, example: string) => void;
+  onForget: (surface: string) => void;
+  onSelectSavedWord: (word: SavedWord) => void;
 }
 
 function WordInspector(props: WordInspectorProps) {
@@ -507,14 +627,45 @@ function WordInspector(props: WordInspectorProps) {
         when={props.insight}
         fallback={
           <>
-            <strong>Pick a word</strong>
-            <p>Tap any word in the page to keep its meaning beside the text.</p>
+            <strong>No word selected</strong>
+            <SavedWordList words={props.savedWords} onSelect={props.onSelectSavedWord} />
           </>
         }
       >
         {(insight) => (
           <>
-            <strong>{insight().surface}</strong>
+            <div class="inspector-heading">
+              <strong>{insight().surface}</strong>
+              <span classList={{ "learning-state": true, muted: !insight().saved }}>
+                {insight().saved ? insight().state : "not saved"}
+              </span>
+            </div>
+            <div class="learning-actions">
+              <Show when={!insight().saved}>
+                <button type="button" onClick={() => props.onSave(insight().surface)}>
+                  Save
+                </button>
+              </Show>
+              <button
+                classList={{ active: insight().saved && insight().state === "learning" }}
+                type="button"
+                onClick={() => props.onMark(insight().surface, "learning")}
+              >
+                Learning
+              </button>
+              <button
+                classList={{ active: insight().saved && insight().state === "known" }}
+                type="button"
+                onClick={() => props.onMark(insight().surface, "known")}
+              >
+                Known
+              </button>
+              <Show when={insight().saved}>
+                <button type="button" onClick={() => props.onForget(insight().surface)}>
+                  Forget
+                </button>
+              </Show>
+            </div>
             <dl>
               <Show when={insight().partOfSpeech}>
                 <div>
@@ -539,11 +690,56 @@ function WordInspector(props: WordInspectorProps) {
                 </div>
               </Show>
             </dl>
-            <span class="learning-state">{insight().state}</span>
+            <label class="learning-field">
+              <span>Note</span>
+              <textarea
+                value={insight().note ?? ""}
+                rows="4"
+                onInput={(event) =>
+                  props.onNoteChange(insight().surface, event.currentTarget.value)
+                }
+              />
+            </label>
+            <label class="learning-field">
+              <span>Example</span>
+              <textarea
+                value={insight().example ?? ""}
+                rows="4"
+                onInput={(event) =>
+                  props.onExampleChange(insight().surface, event.currentTarget.value)
+                }
+              />
+            </label>
           </>
         )}
       </Show>
     </aside>
+  );
+}
+
+interface SavedWordListProps {
+  words: SavedWord[];
+  onSelect: (word: SavedWord) => void;
+}
+
+function SavedWordList(props: SavedWordListProps) {
+  return (
+    <Show
+      when={props.words.length > 0}
+      fallback={<p class="inspector-empty">No saved words yet.</p>}
+    >
+      <section class="saved-word-list" aria-label="Saved words">
+        <span class="inspector-section-title">Saved words</span>
+        <For each={props.words}>
+          {(word) => (
+            <button class="saved-word-row" type="button" onClick={() => props.onSelect(word)}>
+              <span>{word.surface}</span>
+              <small>{word.state}</small>
+            </button>
+          )}
+        </For>
+      </section>
+    </Show>
   );
 }
 
