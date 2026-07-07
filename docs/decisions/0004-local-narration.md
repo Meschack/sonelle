@@ -16,7 +16,7 @@ The renderer talks to a small `NarrationGateway` from `packages/audio`. The gate
 
 The desktop app provides the real gateway through Tauri commands. Browser and test workflows use a deterministic fake gateway.
 
-Native audio preparation caches sentence narration locally. When a local TTS command can write a WAV file, the native layer stores `sentence.wav` and returns it as an audio data URL. When only Speech Dispatcher is available, the native layer stores the sentence text and plays it through `spd-say`.
+Native audio preparation caches sentence narration locally. The native layer prefers Piper, stores `sentence.wav`, and returns it as an audio data URL. Robotic system speech is not acceptable as normal narration; if no neural local voice is configured, Readex reports that narration needs attention.
 
 ## Why
 
@@ -51,11 +51,12 @@ Remote TTS first:
 
 ## Consequences
 
-The first native adapter is intentionally modest:
+The first native adapter is intentionally local and quality-gated:
 
-- It prefers file-producing local TTS commands such as `espeak-ng`, `espeak`, or `pico2wave`.
-- It falls back to Speech Dispatcher when available.
-- It reports `needs attention` when no local speech path exists.
+- It prefers cached Piper WAV files.
+- It generates new sentence WAV files with Piper when a local voice is configured.
+- It reports `needs attention` when no neural local voice exists.
+- It does not play Speech Dispatcher or eSpeak fallback voices as normal narration.
 
 The renderer advances highlighting when the active sentence finishes playing. It does not expose cache generation, subprocess work, chunks, queues, or other internals to the user.
 

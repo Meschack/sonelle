@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
+const DEFAULT_PIPER_VOICE: &str = "en_US-lessac-medium";
+const MISSING_NEURAL_VOICE_MESSAGE: &str = "Install a natural local voice to listen offline.";
+const NARRATION_CACHE_VERSION: &str = "piper-v1";
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SentenceAudioRequest {
@@ -50,9 +54,9 @@ struct AdapterOutput {
 }
 
 struct SentenceAudioCache {
+    app_data_dir: PathBuf,
     dir: PathBuf,
     audio_path: PathBuf,
-    speech_text_path: PathBuf,
 }
 
 pub fn prepare_narration(
@@ -80,34 +84,11 @@ pub fn speak_prepared_narration(
     app: &AppHandle,
     request: SentenceAudioRequest,
 ) -> Result<(), String> {
-    let cache = SentenceAudioCache::open(app, &request)?;
-    let text = fs::read_to_string(&cache.speech_text_path).unwrap_or(request.text);
-
-    if !command_exists("spd-say") {
-        return Err("Install a local speech voice to listen offline.".to_string());
-    }
-
-    let status = Command::new("spd-say")
-        .arg("--wait")
-        .arg(text)
-        .status()
-        .map_err(|_| "We couldn't start local narration.".to_string())?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err("Local narration needs attention. Please try another voice.".to_string())
-    }
+    let _ = SentenceAudioCache::open(app, &request)?;
+    Err(MISSING_NEURAL_VOICE_MESSAGE.to_string())
 }
 
 pub fn stop_narration() -> Result<(), String> {
-    if command_exists("spd-say") {
-        Command::new("spd-say")
-            .arg("--stop")
-            .status()
-            .map_err(|_| "We couldn't stop narration.".to_string())?;
-    }
-
     Ok(())
 }
 
@@ -129,20 +110,18 @@ impl SpeechAdapter for LocalSpeechAdapter {
             });
         }
 
-        if cache.speech_text_path.exists() && command_exists("spd-say") {
-            return Ok(AdapterOutput {
-                readiness: "ready",
-                playback_mode: "native-speech",
-                source_url: None,
-                cached: true,
-                message: None,
-            });
-        }
-
         fs::create_dir_all(&cache.dir)
             .map_err(|_| "We couldn't prepare local narration.".to_string())?;
 
-        if synthesize_wav(&request.text, &cache.audio_path)? {
+        let Some(runtime) = PiperRuntime::resolve(cache) else {
+            return Ok(needs_neural_voice());
+        };
+
+        if runtime
+            .synthesize_wav(&request.text, &cache.audio_path)
+            .is_ok()
+            && cache.audio_path.exists()
+        {
             return Ok(AdapterOutput {
                 readiness: "ready",
                 playback_mode: "html-audio",
@@ -152,25 +131,135 @@ impl SpeechAdapter for LocalSpeechAdapter {
             });
         }
 
-        if command_exists("spd-say") {
-            fs::write(&cache.speech_text_path, &request.text)
-                .map_err(|_| "We couldn't prepare local narration.".to_string())?;
-            return Ok(AdapterOutput {
-                readiness: "ready",
-                playback_mode: "native-speech",
-                source_url: None,
-                cached: false,
-                message: None,
+        Ok(AdapterOutput {
+            readiness: "needs-attention",
+            playback_mode: "html-audio",
+            source_url: None,
+            cached: false,
+            message: Some("Local voice needs attention. Try reinstalling it.".to_string()),
+        })
+    }
+}
+
+fn needs_neural_voice() -> AdapterOutput {
+    AdapterOutput {
+        readiness: "needs-attention",
+        playback_mode: "html-audio",
+        source_url: None,
+        cached: false,
+        message: Some(MISSING_NEURAL_VOICE_MESSAGE.to_string()),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PiperRuntime {
+    runner: PiperRunner,
+    voice: PiperVoice,
+}
+
+impl PiperRuntime {
+    fn resolve(cache: &SentenceAudioCache) -> Option<Self> {
+        Some(Self {
+            runner: PiperRunner::resolve()?,
+            voice: PiperVoice::resolve(cache)?,
+        })
+    }
+
+    fn synthesize_wav(&self, text: &str, output: &Path) -> Result<(), String> {
+        if output.exists() {
+            fs::remove_file(output)
+                .map_err(|_| "We couldn't refresh local narration.".to_string())?;
+        }
+
+        let mut command = self.runner.command();
+        if let Some(data_dir) = &self.voice.data_dir {
+            command.arg("--data-dir").arg(data_dir);
+        }
+
+        let status = command
+            .arg("-m")
+            .arg(&self.voice.model)
+            .arg("-f")
+            .arg(output)
+            .arg("--")
+            .arg(text)
+            .status()
+            .map_err(|_| "We couldn't start the local voice.".to_string())?;
+
+        if status.success() && output.exists() {
+            Ok(())
+        } else {
+            Err("Local voice needs attention. Try reinstalling it.".to_string())
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum PiperRunner {
+    Binary(PathBuf),
+    Python(PathBuf),
+}
+
+impl PiperRunner {
+    fn resolve() -> Option<Self> {
+        if let Some(path) = env_path("READEX_PIPER_BIN").filter(|path| path.exists()) {
+            return Some(Self::Binary(path));
+        }
+
+        for readex_dir in readex_state_dirs() {
+            let local_python = venv_python_path(&readex_dir.join("piper-venv"));
+            if local_python.exists() {
+                return Some(Self::Python(local_python));
+            }
+        }
+
+        if let Some(path) = env_path("READEX_PIPER_PYTHON").filter(|path| path.exists()) {
+            return Some(Self::Python(path));
+        }
+
+        command_path("piper").map(Self::Binary)
+    }
+
+    fn command(&self) -> Command {
+        match self {
+            Self::Binary(path) => Command::new(path),
+            Self::Python(path) => {
+                let mut command = Command::new(path);
+                command.arg("-m").arg("piper");
+                command
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PiperVoice {
+    model: String,
+    data_dir: Option<PathBuf>,
+}
+
+impl PiperVoice {
+    fn resolve(cache: &SentenceAudioCache) -> Option<Self> {
+        if let Some(model) = env_path("READEX_PIPER_MODEL").filter(|path| piper_model_exists(path))
+        {
+            return Some(Self {
+                model: model.to_string_lossy().to_string(),
+                data_dir: None,
             });
         }
 
-        Ok(AdapterOutput {
-            readiness: "needs-attention",
-            playback_mode: "native-speech",
-            source_url: None,
-            cached: false,
-            message: Some("Install a local speech voice to listen offline.".to_string()),
-        })
+        let voice = env::var("READEX_PIPER_VOICE")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_PIPER_VOICE.to_string());
+
+        piper_data_dirs(cache)
+            .into_iter()
+            .find(|dir| piper_voice_exists(dir, &voice))
+            .map(|data_dir| Self {
+                model: voice,
+                data_dir: Some(data_dir),
+            })
     }
 }
 
@@ -209,16 +298,20 @@ impl SentenceAudioCache {
             .path()
             .app_data_dir()
             .map_err(|_| "We couldn't open the local library folder.".to_string())?;
-        Ok(Self::for_root(app_dir.join("audio"), request))
+        Ok(Self::for_root(
+            app_dir.clone(),
+            app_dir.join("audio"),
+            request,
+        ))
     }
 
     #[cfg(test)]
-    fn for_root(root: PathBuf, request: &SentenceAudioRequest) -> Self {
+    fn for_root(app_data_dir: PathBuf, root: PathBuf, request: &SentenceAudioRequest) -> Self {
         let key = cache_key(request);
         let dir = root.join(&key);
         Self {
+            app_data_dir,
             audio_path: dir.join("sentence.wav"),
-            speech_text_path: dir.join("sentence.txt"),
             dir,
         }
     }
@@ -226,50 +319,15 @@ impl SentenceAudioCache {
 
 #[cfg(not(test))]
 impl SentenceAudioCache {
-    fn for_root(root: PathBuf, request: &SentenceAudioRequest) -> Self {
+    fn for_root(app_data_dir: PathBuf, root: PathBuf, request: &SentenceAudioRequest) -> Self {
         let key = cache_key(request);
         let dir = root.join(&key);
         Self {
+            app_data_dir,
             audio_path: dir.join("sentence.wav"),
-            speech_text_path: dir.join("sentence.txt"),
             dir,
         }
     }
-}
-
-fn synthesize_wav(text: &str, output: &Path) -> Result<bool, String> {
-    let output_path = output.to_string_lossy().to_string();
-    let commands: [(&str, Vec<String>); 3] = [
-        (
-            "espeak-ng",
-            vec!["-w".to_string(), output_path.clone(), text.to_string()],
-        ),
-        (
-            "espeak",
-            vec!["-w".to_string(), output_path.clone(), text.to_string()],
-        ),
-        (
-            "pico2wave",
-            vec!["-w".to_string(), output_path, text.to_string()],
-        ),
-    ];
-
-    for (command, args) in commands {
-        if !command_exists(command) {
-            continue;
-        }
-
-        let status = Command::new(command)
-            .args(args)
-            .status()
-            .map_err(|_| "We couldn't prepare local narration.".to_string())?;
-
-        if status.success() && output.exists() {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
 }
 
 fn wav_data_url(path: &Path) -> Result<String, String> {
@@ -277,16 +335,102 @@ fn wav_data_url(path: &Path) -> Result<String, String> {
     Ok(format!("data:audio/wav;base64,{}", STANDARD.encode(bytes)))
 }
 
-fn command_exists(command: &str) -> bool {
+fn command_path(command: &str) -> Option<PathBuf> {
     let Some(path) = env::var_os("PATH") else {
-        return false;
+        return None;
     };
 
-    env::split_paths(&path).any(|dir| dir.join(command).exists())
+    env::split_paths(&path)
+        .map(|dir| dir.join(command))
+        .find(|path| path.exists())
+}
+
+fn env_path(key: &str) -> Option<PathBuf> {
+    env::var_os(key).and_then(|value| {
+        if value.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(value))
+        }
+    })
+}
+
+fn piper_data_dirs(cache: &SentenceAudioCache) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Some(dir) = env_path("READEX_PIPER_DATA_DIR") {
+        dirs.push(dir);
+    }
+
+    for readex_dir in readex_state_dirs() {
+        dirs.push(readex_dir.join("voices/piper"));
+    }
+
+    dirs.push(cache.app_data_dir.join("voices/piper"));
+    dirs
+}
+
+fn readex_state_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(current_dir) = env::current_dir() {
+        push_readex_state_dirs(&mut dirs, &current_dir);
+    }
+
+    push_readex_state_dirs(&mut dirs, Path::new(env!("CARGO_MANIFEST_DIR")));
+    dirs
+}
+
+fn push_readex_state_dirs(dirs: &mut Vec<PathBuf>, start: &Path) {
+    for ancestor in start.ancestors() {
+        let candidate = ancestor.join(".readex");
+        if !dirs.contains(&candidate) {
+            dirs.push(candidate);
+        }
+    }
+}
+
+fn piper_model_exists(model: &Path) -> bool {
+    model.exists() && model.with_extension("onnx.json").exists()
+}
+
+fn piper_voice_exists(data_dir: &Path, voice: &str) -> bool {
+    data_dir.exists()
+        && find_nested_file(data_dir, &format!("{voice}.onnx"))
+        && find_nested_file(data_dir, &format!("{voice}.onnx.json"))
+}
+
+fn find_nested_file(root: &Path, file_name: &str) -> bool {
+    let mut pending = vec![root.to_path_buf()];
+
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.file_name().is_some_and(|name| name == file_name) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn venv_python_path(venv_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        venv_dir.join("Scripts/python.exe")
+    } else {
+        venv_dir.join("bin/python")
+    }
 }
 
 fn cache_key(request: &SentenceAudioRequest) -> String {
     let mut hasher = Sha256::new();
+    hasher.update(NARRATION_CACHE_VERSION.as_bytes());
     hasher.update(request.book_id.as_bytes());
     hasher.update(request.chapter_id.as_bytes());
     hasher.update(request.sentence_id.as_bytes());
@@ -340,7 +484,10 @@ mod tests {
 
     use chrono::Utc;
 
-    use super::{FakeSpeechAdapter, SentenceAudioCache, SentenceAudioRequest, SpeechAdapter};
+    use super::{
+        piper_model_exists, piper_voice_exists, FakeSpeechAdapter, LocalSpeechAdapter,
+        PiperRuntime, SentenceAudioCache, SentenceAudioRequest, SpeechAdapter,
+    };
 
     #[test]
     fn fake_adapter_creates_and_reuses_cached_audio() {
@@ -352,7 +499,8 @@ mod tests {
             text: "Hello reader.".to_string(),
         };
         let temp_dir = temp_audio_dir();
-        let cache = SentenceAudioCache::for_root(temp_dir.clone(), &request);
+        let cache =
+            SentenceAudioCache::for_root(temp_dir.clone(), temp_dir.join("audio"), &request);
         let adapter = FakeSpeechAdapter;
 
         let first = adapter
@@ -369,6 +517,73 @@ mod tests {
             .source_url
             .expect("url should exist")
             .starts_with("data:audio/wav"));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn local_adapter_generates_and_reuses_piper_audio_when_available() {
+        let request = SentenceAudioRequest {
+            book_id: "book".to_string(),
+            chapter_id: "chapter".to_string(),
+            sentence_id: "piper-sentence".to_string(),
+            sentence_index: 0,
+            text: "Readex is ready to listen.".to_string(),
+        };
+        let temp_dir = temp_audio_dir();
+        let cache =
+            SentenceAudioCache::for_root(temp_dir.clone(), temp_dir.join("audio"), &request);
+
+        if PiperRuntime::resolve(&cache).is_none() {
+            fs::remove_dir_all(temp_dir).ok();
+            return;
+        }
+
+        let adapter = LocalSpeechAdapter;
+        let first = adapter
+            .prepare(&request, &cache)
+            .expect("piper audio should prepare");
+        let second = adapter
+            .prepare(&request, &cache)
+            .expect("piper audio should be cached");
+
+        assert_eq!(first.readiness, "ready");
+        assert_eq!(first.playback_mode, "html-audio");
+        assert!(!first.cached);
+        assert!(second.cached);
+        assert!(cache.audio_path.exists());
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn detects_piper_voice_in_nested_data_dir() {
+        let temp_dir = temp_audio_dir();
+        let voice_dir = temp_dir.join("en/en_US/lessac/medium");
+        fs::create_dir_all(&voice_dir).expect("voice dir should be created");
+        fs::write(voice_dir.join("en_US-lessac-medium.onnx"), b"model")
+            .expect("model should be written");
+        fs::write(voice_dir.join("en_US-lessac-medium.onnx.json"), b"{}")
+            .expect("config should be written");
+
+        assert!(piper_voice_exists(&temp_dir, "en_US-lessac-medium"));
+        assert!(!piper_voice_exists(&temp_dir, "en_US-missing-medium"));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn exact_piper_model_requires_adjacent_config() {
+        let temp_dir = temp_audio_dir();
+        fs::create_dir_all(&temp_dir).expect("model dir should be created");
+        let model = temp_dir.join("voice.onnx");
+        fs::write(&model, b"model").expect("model should be written");
+
+        assert!(!piper_model_exists(&model));
+
+        fs::write(temp_dir.join("voice.onnx.json"), b"{}").expect("config should be written");
+
+        assert!(piper_model_exists(&model));
 
         fs::remove_dir_all(temp_dir).ok();
     }

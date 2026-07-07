@@ -29,6 +29,12 @@
       "dir": ".",
       "cmd": "pnpm check:native",
       "color": "white"
+    },
+    {
+      "name": "VOICE",
+      "dir": ".",
+      "cmd": "pnpm setup:piper",
+      "color": "cyan"
     }
   ]
 }

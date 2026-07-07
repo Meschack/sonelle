@@ -9,6 +9,7 @@
     "dev:tui": "node scripts/dev-tui.mjs",
     "dev:desktop": "pnpm --filter @readex/desktop tauri dev",
     "dev:web": "pnpm --filter @readex/desktop dev",
+    "setup:piper": "node scripts/setup-piper-voice.mjs",
     "build": "pnpm --filter @readex/desktop build",
     "build:desktop": "pnpm --filter @readex/desktop tauri build",
     "typecheck": "pnpm -r --if-present typecheck",

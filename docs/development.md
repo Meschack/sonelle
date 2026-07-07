@@ -26,6 +26,7 @@ sudo apt install libdbus-1-dev libglib2.0-dev libgtk-3-dev pkg-config
 
 ```bash
 pnpm install
+pnpm setup:piper
 pnpm dev:desktop
 pnpm dev:web
 pnpm typecheck
@@ -80,3 +81,34 @@ Current blocked commands:
 Run this from the repository root. The root `Cargo.toml` is a workspace that points to `apps/desktop/src-tauri`.
 
 If native checks report missing system packages through `pkg-config`, install the Tauri prerequisite set above and retry.
+
+## Local Narration Voice
+
+Readex uses Piper for local neural narration during desktop development.
+
+Install the default development voice with:
+
+```bash
+pnpm setup:piper
+```
+
+This creates a local `.readex/` sandbox containing:
+
+- `piper-venv`: a Python virtual environment with Piper installed
+- `voices/piper`: downloaded Piper voice files
+- `piper-smoke.wav`: a short generated sample proving the voice works
+
+The app looks for the default `en_US-lessac-medium` voice in `.readex/voices/piper` during development. You can override the voice with:
+
+```bash
+READEX_PIPER_VOICE=en_US-lessac-medium pnpm setup:piper
+```
+
+Advanced overrides:
+
+- `READEX_PIPER_BIN`: exact Piper executable
+- `READEX_PIPER_PYTHON`: exact Python executable with the Piper module installed
+- `READEX_PIPER_MODEL`: exact `.onnx` model path with a matching `.onnx.json` beside it
+- `READEX_PIPER_DATA_DIR`: directory containing downloaded Piper voices
+
+If no neural local voice is available, Readex shows a friendly needs-attention state instead of playing robotic system speech.
