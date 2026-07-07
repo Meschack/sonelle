@@ -1,4 +1,13 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import {
+  batch,
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show
+} from "solid-js";
 import {
   createAudioSettings,
   createPrefetchingNarrationGateway,
@@ -8,6 +17,7 @@ import {
 } from "@readex/audio";
 import { bookmarkedBookIds, filterLibraryBooks, type LibraryBookFilter } from "@readex/library";
 import {
+  calculateReaderProgress,
   createPlaybackState,
   finishSentencePlayback,
   highlightSentence,
@@ -18,6 +28,8 @@ import {
   selectPlaybackSentence,
   sentenceMatchesQuery,
   type PlaybackStatus,
+  type ReaderPlaybackState,
+  type ReaderProgress,
   type ReaderSearchResult
 } from "@readex/reader";
 import {
@@ -72,6 +84,7 @@ interface SelectedWord {
 interface OpenBookOptions {
   chapterId?: string;
   sentenceIndex?: number;
+  playbackStatus?: PlaybackStatus;
 }
 
 export function ReaderExperience() {
@@ -117,9 +130,13 @@ export function ReaderExperience() {
   let narrationRun = 0;
   let librarySearchRun = 0;
   let readerSearchInput: HTMLInputElement | undefined;
+  const sentenceElements = new Map<string, HTMLParagraphElement>();
 
   const activeSentence = createMemo(() => reader().sentences[playback().activeSentenceIndex]);
   const highlight = createMemo(() => highlightSentence(activeSentence()?.id ?? null));
+  const readerProgress = createMemo(() =>
+    calculateReaderProgress(reader().chapters, reader().chapter.id, playback().activeSentenceIndex)
+  );
   const currentBookBookmarks = createMemo(() =>
     bookmarks().filter((bookmark) => bookmark.bookId === reader().book.id)
   );
@@ -203,6 +220,16 @@ export function ReaderExperience() {
       activeHtmlAudio.playbackRate = settings.playbackRate;
     }
     audioSettingsRepository.save(settings);
+  });
+
+  createEffect(() => {
+    const sentenceId = activeSentence()?.id;
+    if (sentenceId == null) return;
+
+    sentenceElements.get(sentenceId)?.scrollIntoView({
+      block: "center",
+      behavior: "smooth"
+    });
   });
 
   createEffect(() => {
@@ -315,11 +342,11 @@ export function ReaderExperience() {
   };
 
   const moveSentence = (direction: -1 | 1) => {
-    setPlayback((current) => movePlayback(current, reader().sentences.length, direction));
+    commitPlaybackJump((current) => movePlayback(current, reader().sentences.length, direction));
   };
 
   const selectSentence = (sentenceIndex: number) => {
-    setPlayback((current) =>
+    commitPlaybackJump((current) =>
       selectPlaybackSentence(current, reader().sentences.length, sentenceIndex)
     );
   };
@@ -392,22 +419,42 @@ export function ReaderExperience() {
     setAudioSettings((current) => createAudioSettings({ ...current, ...nextSettings }));
   };
 
+  const jumpPlaybackStatus = (): PlaybackStatus =>
+    playback().status === "ended" ? "paused" : playback().status;
+
+  const commitPlaybackJump = (
+    resolvePlayback: (current: ReaderPlaybackState) => ReaderPlaybackState
+  ) => {
+    batch(() => {
+      setPlayback(resolvePlayback);
+      setActiveNarration(null);
+      setNarrationNotice(null);
+      setIsPreparingNarration(false);
+      setSelectedWord(null);
+    });
+    narrationRepository.clearPrefetchedNarrations();
+  };
+
   const activateReader = (
     nextReader: ReaderView,
-    sentenceIndex = nextReader.initialSentenceIndex
+    sentenceIndex = nextReader.initialSentenceIndex,
+    playbackStatus: PlaybackStatus = "idle"
   ) => {
-    setReader(nextReader);
-    setPlayback(() =>
-      selectPlaybackSentence(
-        { activeSentenceIndex: sentenceIndex, status: "idle" },
-        nextReader.sentences.length,
-        sentenceIndex
-      )
-    );
-    setActiveNarration(null);
-    setNarrationNotice(null);
-    setIsPreparingNarration(false);
-    setSelectedWord(null);
+    sentenceElements.clear();
+    batch(() => {
+      setReader(nextReader);
+      setPlayback(() =>
+        selectPlaybackSentence(
+          { activeSentenceIndex: sentenceIndex, status: playbackStatus },
+          nextReader.sentences.length,
+          sentenceIndex
+        )
+      );
+      setActiveNarration(null);
+      setNarrationNotice(null);
+      setIsPreparingNarration(false);
+      setSelectedWord(null);
+    });
     narrationRepository.clearPrefetchedNarrations();
   };
 
@@ -564,20 +611,28 @@ export function ReaderExperience() {
 
     if (reader().source === "sample") {
       const nextReader = buildFixtureReaderView({ chapterId, sentenceIndex: 0 });
-      activateReader(nextReader, 0);
+      activateReader(nextReader, 0, jumpPlaybackStatus());
       setLibraryNotice(null);
       void refreshBookmarks(nextReader.book.id);
       return;
     }
 
-    await openLibraryBook(reader().book.id, { chapterId, sentenceIndex: 0 });
+    await openLibraryBook(reader().book.id, {
+      chapterId,
+      sentenceIndex: 0,
+      playbackStatus: jumpPlaybackStatus()
+    });
   };
 
   const openLibraryBook = async (bookId: string, options: OpenBookOptions = {}) => {
     try {
       const document = await repository.openBook(bookId);
       const nextReader = buildReaderViewFromDocument(document, options);
-      activateReader(nextReader, options.sentenceIndex ?? nextReader.initialSentenceIndex);
+      activateReader(
+        nextReader,
+        options.sentenceIndex ?? nextReader.initialSentenceIndex,
+        options.playbackStatus ?? "idle"
+      );
       setLibraryNotice(null);
       await refreshBookmarks(bookId);
     } catch (error) {
@@ -658,7 +713,8 @@ export function ReaderExperience() {
           chapterId: bookmark.chapterId,
           sentenceIndex: bookmark.sentenceIndex
         }),
-        bookmark.sentenceIndex
+        bookmark.sentenceIndex,
+        jumpPlaybackStatus()
       );
       setInspectorTab("bookmarks");
       return;
@@ -666,16 +722,23 @@ export function ReaderExperience() {
 
     await openLibraryBook(bookmark.bookId, {
       chapterId: bookmark.chapterId,
-      sentenceIndex: bookmark.sentenceIndex
+      sentenceIndex: bookmark.sentenceIndex,
+      playbackStatus: bookmark.bookId === reader().book.id ? jumpPlaybackStatus() : "idle"
     });
     setInspectorTab("bookmarks");
   };
 
   const openLibrarySearchResult = async (result: LibrarySearchResultDto) => {
     if (result.kind === "sentence" && result.chapterId != null && result.sentenceIndex != null) {
+      if (result.bookId === reader().book.id && result.chapterId === reader().chapter.id) {
+        selectSentence(result.sentenceIndex);
+        return;
+      }
+
       await openLibraryBook(result.bookId, {
         chapterId: result.chapterId,
-        sentenceIndex: result.sentenceIndex
+        sentenceIndex: result.sentenceIndex,
+        playbackStatus: result.bookId === reader().book.id ? jumpPlaybackStatus() : "idle"
       });
       return;
     }
@@ -732,6 +795,7 @@ export function ReaderExperience() {
           activeChapterId={reader().chapter.id}
           onOpenChapter={openChapter}
         />
+        <ReaderProgressStrip progress={readerProgress()} />
 
         <div class="reader-layout">
           <div class="audio-margin" aria-hidden="true">
@@ -752,6 +816,9 @@ export function ReaderExperience() {
             <For each={reader().sentences}>
               {(sentence) => (
                 <p
+                  ref={(element) => {
+                    sentenceElements.set(sentence.id, element);
+                  }}
                   classList={{
                     sentence: true,
                     active: highlight().activeSentenceId === sentence.id,
@@ -813,7 +880,7 @@ export function ReaderExperience() {
 
       <PlaybackRail
         chapterTitle={reader().chapter.title}
-        activeIndex={playback().activeSentenceIndex}
+        progress={readerProgress()}
         sentenceCount={reader().sentences.length}
         status={playback().status}
         narrationStatus={narrationStatusLabel()}
@@ -824,6 +891,44 @@ export function ReaderExperience() {
         onNext={() => moveSentence(1)}
       />
     </main>
+  );
+}
+
+interface ReaderProgressStripProps {
+  progress: ReaderProgress;
+}
+
+function ReaderProgressStrip(props: ReaderProgressStripProps) {
+  const chapterNumber = () =>
+    props.progress.chapterCount === 0 ? 0 : props.progress.chapterIndex + 1;
+
+  return (
+    <section class="reading-progress-summary" aria-label="Reading progress">
+      <div class="reading-progress-item">
+        <span>
+          <strong>Book</strong>
+          <small>
+            {props.progress.bookSentenceNumber} / {props.progress.bookSentenceCount}
+          </small>
+        </span>
+        <div class="progress-track" aria-hidden="true">
+          <span style={{ width: `${props.progress.bookPercent}%` }} />
+        </div>
+      </div>
+      <div class="reading-progress-item">
+        <span>
+          <strong>
+            Chapter {chapterNumber()} / {props.progress.chapterCount}
+          </strong>
+          <small>
+            {props.progress.chapterSentenceNumber} / {props.progress.chapterSentenceCount}
+          </small>
+        </span>
+        <div class="progress-track chapter" aria-hidden="true">
+          <span style={{ width: `${props.progress.chapterPercent}%` }} />
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1476,7 +1581,7 @@ function SavedWordList(props: SavedWordListProps) {
 
 interface PlaybackRailProps {
   chapterTitle: string;
-  activeIndex: number;
+  progress: ReaderProgress;
   sentenceCount: number;
   status: PlaybackStatus;
   narrationStatus: string;
@@ -1488,27 +1593,45 @@ interface PlaybackRailProps {
 }
 
 function PlaybackRail(props: PlaybackRailProps) {
-  const progress = () =>
-    props.sentenceCount <= 1 ? 0 : (props.activeIndex / (props.sentenceCount - 1)) * 100;
+  const chapterNumber = () =>
+    props.progress.chapterCount === 0 ? 0 : props.progress.chapterIndex + 1;
 
   return (
     <footer class="audio-rail" aria-label="Playback controls">
       <div class="chapter-status">
         <span>{props.chapterTitle}</span>
         <span class="mono">
-          {props.activeIndex + 1} / {props.sentenceCount}
+          Chapter {chapterNumber()} / {props.progress.chapterCount}
         </span>
         <span classList={{ "narration-status": true, attention: props.narrationNotice != null }}>
           {props.narrationStatus}
         </span>
       </div>
-      <div class="progress-track" aria-hidden="true">
-        <span style={{ width: `${progress()}%` }} />
+      <div class="progress-stack" aria-label="Reading progress">
+        <div class="progress-row">
+          <span>Book</span>
+          <div class="progress-track" aria-hidden="true">
+            <span style={{ width: `${props.progress.bookPercent}%` }} />
+          </div>
+          <span class="mono">
+            {props.progress.bookSentenceNumber} / {props.progress.bookSentenceCount}
+          </span>
+        </div>
+        <div class="progress-row">
+          <span>Chapter</span>
+          <div class="progress-track chapter" aria-hidden="true">
+            <span style={{ width: `${props.progress.chapterPercent}%` }} />
+          </div>
+          <span class="mono">
+            {props.progress.chapterSentenceNumber} / {props.progress.chapterSentenceCount}
+          </span>
+        </div>
       </div>
       <button
         class="icon-button"
         type="button"
         aria-label="Previous sentence"
+        disabled={props.sentenceCount === 0}
         onClick={props.onPrevious}
       >
         <PreviousIcon />
@@ -1517,6 +1640,7 @@ function PlaybackRail(props: PlaybackRailProps) {
         class="play"
         type="button"
         aria-label={props.status === "playing" ? "Pause" : "Play"}
+        disabled={props.sentenceCount === 0}
         onClick={props.onToggle}
       >
         <Show when={props.status === "playing"} fallback={<PlayIcon />}>
@@ -1524,7 +1648,13 @@ function PlaybackRail(props: PlaybackRailProps) {
         </Show>
         <span>{props.status === "playing" ? "Pause" : "Play"}</span>
       </button>
-      <button class="icon-button" type="button" aria-label="Next sentence" onClick={props.onNext}>
+      <button
+        class="icon-button"
+        type="button"
+        aria-label="Next sentence"
+        disabled={props.sentenceCount === 0}
+        onClick={props.onNext}
+      >
         <NextIcon />
       </button>
       <span class="mono">{props.playbackRate.toFixed(2)}x</span>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   advancePlayback,
+  calculateReaderProgress,
   createPlaybackState,
   finishSentencePlayback,
   movePlayback,
@@ -49,6 +50,43 @@ describe("reader playback", () => {
         status: "paused"
       }
     );
+  });
+});
+
+describe("reader progress", () => {
+  it("calculates book and chapter progress across chapters", () => {
+    const progress = calculateReaderProgress(
+      [
+        { id: "chapter-2", index: 1, sentenceCount: 3 },
+        { id: "chapter-1", index: 0, sentenceCount: 2 }
+      ],
+      "chapter-2",
+      1
+    );
+
+    expect(progress).toMatchObject({
+      chapterIndex: 1,
+      chapterCount: 2,
+      chapterSentenceNumber: 2,
+      chapterSentenceCount: 3,
+      bookSentenceNumber: 4,
+      bookSentenceCount: 5
+    });
+    expect(progress.chapterPercent).toBeCloseTo(66.67, 1);
+    expect(progress.bookPercent).toBe(80);
+  });
+
+  it("returns stable zero progress without readable sentences", () => {
+    expect(calculateReaderProgress([], "missing", 4)).toEqual({
+      chapterIndex: 0,
+      chapterCount: 0,
+      chapterSentenceNumber: 0,
+      chapterSentenceCount: 0,
+      chapterPercent: 0,
+      bookSentenceNumber: 0,
+      bookSentenceCount: 0,
+      bookPercent: 0
+    });
   });
 });
 

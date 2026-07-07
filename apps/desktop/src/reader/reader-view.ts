@@ -30,6 +30,7 @@ export interface ReaderView {
   };
   chapters: ReaderChapterNavigationItem[];
   initialSentenceIndex: number;
+  totalSentenceCount: number;
   sentences: ReaderSentenceView[];
 }
 
@@ -64,9 +65,12 @@ export function buildFixtureReaderView(
       },
       chapters: [],
       initialSentenceIndex: 0,
+      totalSentenceCount: 0,
       sentences: []
     };
   }
+
+  const sentences = segmentSentences(chapter.body);
 
   return {
     source: "sample",
@@ -80,9 +84,12 @@ export function buildFixtureReaderView(
       title: chapter.title
     },
     chapters,
-    initialSentenceIndex:
-      options.chapterId === chapter.id && options.sentenceIndex != null ? options.sentenceIndex : 0,
-    sentences: segmentSentences(chapter.body).map((sentence) => ({
+    initialSentenceIndex: resolveInitialSentenceIndex(
+      sentences.length,
+      options.chapterId === chapter.id ? options.sentenceIndex : undefined
+    ),
+    totalSentenceCount: totalSentenceCount(chapters),
+    sentences: sentences.map((sentence) => ({
       id: createSentenceId(book.id, chapter.id, sentence.index),
       index: sentence.index,
       text: sentence.text,
@@ -110,6 +117,7 @@ export function buildReaderViewFromDocument(
       },
       chapters: [],
       initialSentenceIndex: 0,
+      totalSentenceCount: 0,
       sentences: []
     };
   }
@@ -127,12 +135,18 @@ export function buildReaderViewFromDocument(
       index: entry.index,
       sentenceCount: entry.sentences.length
     })),
-    initialSentenceIndex:
+    initialSentenceIndex: resolveInitialSentenceIndex(
+      chapter.sentences.length,
       options.chapterId === chapter.id && options.sentenceIndex != null
         ? options.sentenceIndex
         : document.position?.chapterId === chapter.id
           ? document.position.sentenceIndex
-          : 0,
+          : undefined
+    ),
+    totalSentenceCount: document.chapters.reduce(
+      (total, entry) => total + entry.sentences.length,
+      0
+    ),
     sentences: chapter.sentences.map((sentence) => ({
       id: sentence.id,
       index: sentence.index,
@@ -140,4 +154,13 @@ export function buildReaderViewFromDocument(
       tokens: tokenizeReaderText(sentence.text)
     }))
   };
+}
+
+function totalSentenceCount(chapters: ReaderChapterNavigationItem[]): number {
+  return chapters.reduce((total, chapter) => total + chapter.sentenceCount, 0);
+}
+
+function resolveInitialSentenceIndex(sentenceCount: number, sentenceIndex?: number): number {
+  if (sentenceCount <= 0 || sentenceIndex == null || !Number.isFinite(sentenceIndex)) return 0;
+  return Math.max(0, Math.min(Math.trunc(sentenceIndex), sentenceCount - 1));
 }

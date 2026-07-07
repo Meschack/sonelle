@@ -26,6 +26,23 @@ export interface ReaderSearchResult<TSentence extends SearchableSentence = Searc
   excerpt: string;
 }
 
+export interface ReaderProgressChapter {
+  id: string;
+  index: number;
+  sentenceCount: number;
+}
+
+export interface ReaderProgress {
+  chapterIndex: number;
+  chapterCount: number;
+  chapterSentenceNumber: number;
+  chapterSentenceCount: number;
+  chapterPercent: number;
+  bookSentenceNumber: number;
+  bookSentenceCount: number;
+  bookPercent: number;
+}
+
 export function highlightSentence(sentenceId: string | null): HighlightState {
   return { activeSentenceId: sentenceId };
 }
@@ -146,6 +163,58 @@ export function createSentenceId(bookId: string, chapterId: string, sentenceInde
   return `${bookId}:${chapterId}:sentence-${sentenceIndex + 1}`;
 }
 
+export function calculateReaderProgress(
+  chapters: ReaderProgressChapter[],
+  activeChapterId: string,
+  activeSentenceIndex: number
+): ReaderProgress {
+  const orderedChapters = [...chapters].sort((first, second) => first.index - second.index);
+  const activeChapter =
+    orderedChapters.find((chapter) => chapter.id === activeChapterId) ?? orderedChapters[0];
+  const chapterCount = orderedChapters.length;
+  const bookSentenceCount = orderedChapters.reduce(
+    (total, chapter) => total + Math.max(0, chapter.sentenceCount),
+    0
+  );
+
+  if (activeChapter == null) {
+    return {
+      chapterIndex: 0,
+      chapterCount,
+      chapterSentenceNumber: 0,
+      chapterSentenceCount: 0,
+      chapterPercent: 0,
+      bookSentenceNumber: 0,
+      bookSentenceCount,
+      bookPercent: 0
+    };
+  }
+
+  const chapterSentenceCount = Math.max(0, activeChapter.sentenceCount);
+  const safeSentenceIndex =
+    chapterSentenceCount === 0 ? 0 : clampSentenceIndex(activeSentenceIndex, chapterSentenceCount);
+  const sentencesBeforeChapter = orderedChapters
+    .filter((chapter) => chapter.index < activeChapter.index)
+    .reduce((total, chapter) => total + Math.max(0, chapter.sentenceCount), 0);
+  const bookSentenceIndex =
+    bookSentenceCount === 0
+      ? 0
+      : Math.min(sentencesBeforeChapter + safeSentenceIndex, bookSentenceCount - 1);
+  const chapterSentenceNumber = chapterSentenceCount === 0 ? 0 : safeSentenceIndex + 1;
+  const bookSentenceNumber = bookSentenceCount === 0 ? 0 : bookSentenceIndex + 1;
+
+  return {
+    chapterIndex: activeChapter.index,
+    chapterCount,
+    chapterSentenceNumber,
+    chapterSentenceCount,
+    chapterPercent: percentage(chapterSentenceNumber, chapterSentenceCount),
+    bookSentenceNumber,
+    bookSentenceCount,
+    bookPercent: percentage(bookSentenceNumber, bookSentenceCount)
+  };
+}
+
 function normalizeReaderSearchQuery(query: string): string {
   return query.normalize("NFKC").trim().toLocaleLowerCase().replace(/\s+/g, " ");
 }
@@ -165,4 +234,9 @@ function createSearchExcerpt(text: string, normalizedQuery: string): string {
 
 function clampSentenceIndex(sentenceIndex: number, sentenceCount: number): number {
   return Math.max(0, Math.min(sentenceIndex, sentenceCount - 1));
+}
+
+function percentage(current: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.max(0, Math.min(100, (current / total) * 100));
 }
