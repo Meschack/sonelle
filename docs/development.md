@@ -66,6 +66,8 @@ pnpm dev:tui -- --list
 Current verified commands:
 
 - `pnpm install`
+- `pnpm dev:tui -- --list`
+- `pnpm dev:desktop`
 - `pnpm typecheck`
 - `pnpm test`
 - `pnpm build`
@@ -81,6 +83,8 @@ Current blocked commands:
 Run this from the repository root. The root `Cargo.toml` is a workspace that points to `apps/desktop/src-tauri`.
 
 If native checks report missing system packages through `pkg-config`, install the Tauri prerequisite set above and retry.
+
+If `pnpm dev:desktop` reports that port `1420` is already in use, stop the stale Vite process and rerun the command.
 
 ## Local Narration Voice
 

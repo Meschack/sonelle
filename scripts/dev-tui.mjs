@@ -24,6 +24,7 @@ const ansi = {
   blue: "\x1b[34m",
   purple: "\x1b[35m",
   yellow: "\x1b[33m",
+  cyan: "\x1b[36m",
   white: "\x1b[37m"
 };
 
