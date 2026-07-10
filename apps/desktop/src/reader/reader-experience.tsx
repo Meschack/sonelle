@@ -87,6 +87,13 @@ import type {
 import { isTypingTarget, slugify } from "./reader-formatting";
 import { ReaderInspector } from "./reader-inspector";
 import {
+  clampSidebarWidth,
+  getSidebarResizeBounds,
+  sidebarDefaultWidths,
+  SidebarResizeHandle,
+  type ResizableSidebar
+} from "./sidebar-resize";
+import {
   createLibraryRailMode,
   transitionLibraryRailMode,
   type LibraryRailEvent
@@ -137,6 +144,8 @@ export function ReaderExperience() {
   const [readerContentFontSize, setReaderContentFontSize] = createSignal(
     readerPreferences.contentFontSize
   );
+  const [libraryRailWidth, setLibraryRailWidth] = createSignal(sidebarDefaultWidths.library);
+  const [inspectorRailWidth, setInspectorRailWidth] = createSignal(sidebarDefaultWidths.inspector);
   const [activeView, setActiveView] = createSignal<AppView>("reader");
   const [libraryRailMode, setLibraryRailMode] = createSignal(
     createLibraryRailMode(sampleReader.book.id)
@@ -271,12 +280,25 @@ export function ReaderExperience() {
     return reader().source === "sample" ? "Sample narration" : "Ready to listen";
   });
 
+  const getSidebarBounds = (sidebar: ResizableSidebar) =>
+    getSidebarResizeBounds({
+      sidebar,
+      viewportWidth: window.innerWidth,
+      oppositeSidebarWidth: sidebar === "library" ? inspectorRailWidth() : libraryRailWidth()
+    });
+
+  const clampSidebarWidthsToViewport = () => {
+    setLibraryRailWidth((width) => clampSidebarWidth(width, getSidebarBounds("library")));
+    setInspectorRailWidth((width) => clampSidebarWidth(width, getSidebarBounds("inspector")));
+  };
+
   onMount(() => {
     let disposed = false;
     let unlistenBookDrops: (() => void) | undefined;
     void refreshLibrary();
     void refreshAllBookmarks();
     void refreshAudioCacheStats();
+    clampSidebarWidthsToViewport();
     void listenForBookDrops(handleBookDropEvent).then((unlisten) => {
       if (disposed) {
         unlisten();
@@ -286,9 +308,11 @@ export function ReaderExperience() {
     });
 
     window.addEventListener("keydown", handleShortcut);
+    window.addEventListener("resize", clampSidebarWidthsToViewport);
     onCleanup(() => {
       disposed = true;
       window.removeEventListener("keydown", handleShortcut);
+      window.removeEventListener("resize", clampSidebarWidthsToViewport);
       unlistenBookDrops?.();
     });
   });
@@ -1034,7 +1058,13 @@ export function ReaderExperience() {
   };
 
   return (
-    <main class="sonelle-shell">
+    <main
+      class="sonelle-shell"
+      style={{
+        "--library-rail-width": `${libraryRailWidth()}px`,
+        "--inspector-rail-width": `${inspectorRailWidth()}px`
+      }}
+    >
       <LibraryRail
         mode={libraryRailMode()}
         activeView={activeView()}
@@ -1062,6 +1092,14 @@ export function ReaderExperience() {
         onOpenToolTab={setInspectorTab}
         onOpenChapter={openChapter}
         onReturnToLibrary={() => openAppView("library")}
+      />
+      <SidebarResizeHandle
+        sidebar="library"
+        edge="right"
+        width={libraryRailWidth()}
+        defaultWidth={sidebarDefaultWidths.library}
+        getBounds={() => getSidebarBounds("library")}
+        onWidthChange={setLibraryRailWidth}
       />
 
       <Show
@@ -1203,6 +1241,14 @@ export function ReaderExperience() {
           onRefreshCache={refreshAudioCacheStats}
           onClearCache={clearAudioCache}
           onExportBook={exportCurrentBook}
+        />
+        <SidebarResizeHandle
+          sidebar="inspector"
+          edge="left"
+          width={inspectorRailWidth()}
+          defaultWidth={sidebarDefaultWidths.inspector}
+          getBounds={() => getSidebarBounds("inspector")}
+          onWidthChange={setInspectorRailWidth}
         />
 
         <PlaybackRail
