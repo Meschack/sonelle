@@ -7,6 +7,7 @@ export interface VoiceInstallationState {
   voiceId: string;
   status: VoiceInstallationReadiness;
   downloadSizeBytes: number;
+  downloadedBytes: number;
   progress: number | null;
   message: string;
 }
@@ -18,10 +19,12 @@ interface NativeVoiceInstallationStatus {
   message: string;
 }
 
-interface NativeVoiceInstallationProgress {
+export interface VoiceInstallationProgressDto {
   voiceId: string;
   status: "downloading" | "installing" | "preparing" | "ready";
   progress: number | null;
+  downloadedBytes: number;
+  totalBytes: number;
   message: string;
 }
 
@@ -49,16 +52,10 @@ const nativeVoiceInstallationRepository: VoiceInstallationRepository = {
   },
 
   listen(onProgress) {
-    return listen<NativeVoiceInstallationProgress>(
+    return listen<VoiceInstallationProgressDto>(
       "narration-voice-installation-progress",
       ({ payload }) => {
-        onProgress({
-          voiceId: payload.voiceId,
-          status: payload.status === "ready" ? "ready" : "preparing",
-          downloadSizeBytes: 0,
-          progress: payload.progress,
-          message: payload.message
-        });
+        onProgress(projectVoiceInstallationProgress(payload));
       }
     );
   }
@@ -81,14 +78,29 @@ export function failedVoiceInstallation(voiceId: string, message: string): Voice
     voiceId,
     status: "failed",
     downloadSizeBytes: 0,
+    downloadedBytes: 0,
     progress: null,
     message
+  };
+}
+
+export function projectVoiceInstallationProgress(
+  payload: VoiceInstallationProgressDto
+): VoiceInstallationState {
+  return {
+    voiceId: payload.voiceId,
+    status: payload.status === "ready" ? "ready" : "preparing",
+    downloadSizeBytes: payload.totalBytes,
+    downloadedBytes: payload.downloadedBytes,
+    progress: payload.progress,
+    message: payload.message
   };
 }
 
 function fromNativeStatus(status: NativeVoiceInstallationStatus): VoiceInstallationState {
   return {
     ...status,
+    downloadedBytes: 0,
     progress: status.status === "ready" ? 100 : null
   };
 }
@@ -98,6 +110,7 @@ function readyBrowserVoice(voiceId: string): VoiceInstallationState {
     voiceId,
     status: "ready",
     downloadSizeBytes: 0,
+    downloadedBytes: 0,
     progress: 100,
     message: "Ready to listen offline."
   };

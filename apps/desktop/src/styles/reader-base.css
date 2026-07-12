@@ -824,6 +824,16 @@ svg {
   padding: 26px 22px 24px;
 }
 
+.sidebar-chapter-list,
+.inspector-content {
+  scrollbar-width: none;
+}
+
+.sidebar-chapter-list::-webkit-scrollbar,
+.inspector-content::-webkit-scrollbar {
+  display: none;
+}
+
 .inspector-panel {
   display: grid;
   gap: 18px;
@@ -1017,6 +1027,20 @@ svg {
   accent-color: var(--green);
   height: 8px;
   width: 100%;
+}
+
+.voice-installation-progress-meta {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  justify-content: space-between;
+}
+
+.voice-installation-progress-meta strong {
+  color: var(--green);
+  font-weight: 850;
 }
 
 .voice-installation-card .primary-tool-button {
@@ -1568,10 +1592,6 @@ svg {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.narration-status.attention {
-  color: var(--danger);
 }
 
 .bookmark-toggle.active {

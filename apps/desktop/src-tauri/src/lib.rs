@@ -1,4 +1,5 @@
 mod audio;
+mod background_process;
 mod commands;
 mod epub_import;
 mod storage;

@@ -2,7 +2,7 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     sync::{Mutex, OnceLock},
 };
 
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::audio::narration_voice_is_ready;
+use crate::{audio::narration_voice_is_ready, background_process::background_command};
 
 const NARRATION_VOICE_CONFIG: &str =
     include_str!("../../../../packages/audio/src/narration-voices.json");
@@ -57,6 +57,8 @@ struct VoiceInstallationProgress {
     voice_id: String,
     status: &'static str,
     progress: Option<u8>,
+    downloaded_bytes: u64,
+    total_bytes: u64,
     message: String,
 }
 
@@ -72,6 +74,62 @@ struct RuntimeDownload {
     sha256: &'static str,
     size_bytes: u64,
     kind: RuntimeArchiveKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InstallationProgress {
+    completed_bytes: u64,
+    total_bytes: u64,
+}
+
+impl InstallationProgress {
+    fn new(total_bytes: u64) -> Self {
+        Self {
+            completed_bytes: 0,
+            total_bytes,
+        }
+    }
+
+    fn complete(&mut self, bytes: u64) {
+        self.completed_bytes = self
+            .completed_bytes
+            .saturating_add(bytes)
+            .min(self.total_bytes);
+    }
+
+    fn finish(&mut self) {
+        self.completed_bytes = self.total_bytes;
+    }
+
+    fn snapshot(&self, active_download_bytes: u64) -> (u64, u64, Option<u8>) {
+        let downloaded_bytes = self
+            .completed_bytes
+            .saturating_add(active_download_bytes)
+            .min(self.total_bytes);
+        let progress = (self.total_bytes > 0)
+            .then(|| ((downloaded_bytes.saturating_mul(100) / self.total_bytes).min(100)) as u8);
+        (downloaded_bytes, self.total_bytes, progress)
+    }
+
+    fn emit(
+        &self,
+        app: &AppHandle,
+        voice_id: &str,
+        status: &'static str,
+        message: &str,
+        active_download_bytes: u64,
+    ) {
+        let (downloaded_bytes, total_bytes, progress) = self.snapshot(active_download_bytes);
+        emit_progress(
+            app,
+            voice_id,
+            status,
+            progress,
+            downloaded_bytes,
+            total_bytes,
+            message,
+        );
+    }
 }
 
 pub fn voice_status(
@@ -116,15 +174,22 @@ pub fn install_voice(
         return voice_status(app, voice_id);
     }
 
-    emit_progress(app, voice_id, "preparing", None, "Preparing this voice");
-    ensure_runtime(app, voice_id)?;
-    install_voice_files(app, &voice)?;
+    let runtime_size = if managed_runtime_ready(app) {
+        0
+    } else {
+        runtime_download()?.size_bytes
+    };
+    let mut progress = InstallationProgress::new(runtime_size + voice.download.size_bytes);
+    progress.emit(app, voice_id, "preparing", "Preparing this voice", 0);
+    ensure_runtime(app, voice_id, &mut progress)?;
+    install_voice_files(app, &voice, &mut progress)?;
 
     if !narration_voice_is_ready(app, voice_id) {
         return Err("The voice was downloaded but could not be opened. Please retry.".to_string());
     }
 
-    emit_progress(app, voice_id, "ready", Some(100), "Ready to listen offline");
+    progress.finish();
+    progress.emit(app, voice_id, "ready", "Ready to listen offline", 0);
     voice_status(app, voice_id)
 }
 
@@ -133,7 +198,11 @@ pub fn managed_piper_path(app_data_dir: &Path) -> PathBuf {
     runtime_root(app_data_dir).join("piper").join(executable)
 }
 
-fn install_voice_files(app: &AppHandle, voice: &VoiceCatalogEntry) -> Result<(), String> {
+fn install_voice_files(
+    app: &AppHandle,
+    voice: &VoiceCatalogEntry,
+    progress: &mut InstallationProgress,
+) -> Result<(), String> {
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -153,6 +222,7 @@ fn install_voice_files(app: &AppHandle, voice: &VoiceCatalogEntry) -> Result<(),
         &model_path,
         &voice.download.model_sha256,
         "Downloading voice",
+        progress,
     )?;
     download_verified(
         app,
@@ -161,10 +231,15 @@ fn install_voice_files(app: &AppHandle, voice: &VoiceCatalogEntry) -> Result<(),
         &config_path,
         &voice.download.config_sha256,
         "Finishing voice",
+        progress,
     )
 }
 
-fn ensure_runtime(app: &AppHandle, voice_id: &str) -> Result<(), String> {
+fn ensure_runtime(
+    app: &AppHandle,
+    voice_id: &str,
+    progress: &mut InstallationProgress,
+) -> Result<(), String> {
     if managed_runtime_ready(app) {
         return Ok(());
     }
@@ -190,6 +265,7 @@ fn ensure_runtime(app: &AppHandle, voice_id: &str) -> Result<(), String> {
         &archive_path,
         download.sha256,
         "Preparing offline listening",
+        progress,
     )?;
 
     let destination = runtime_root(&app_data_dir);
@@ -201,12 +277,12 @@ fn ensure_runtime(app: &AppHandle, voice_id: &str) -> Result<(), String> {
     fs::create_dir_all(&temporary)
         .map_err(|_| "Sonelle couldn't prepare offline listening.".to_string())?;
 
-    emit_progress(
+    progress.emit(
         app,
         voice_id,
         "installing",
-        None,
         "Preparing offline listening",
+        0,
     );
     extract_runtime(&archive_path, &temporary, download.kind)?;
     copy_windows_runtime_files(app, &temporary.join("piper"))?;
@@ -230,8 +306,14 @@ fn download_verified(
     destination: &Path,
     expected_sha256: &str,
     message: &str,
+    progress: &mut InstallationProgress,
 ) -> Result<(), String> {
     if destination.exists() && file_sha256(destination).as_deref() == Some(expected_sha256) {
+        let downloaded_bytes = fs::metadata(destination)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        progress.complete(downloaded_bytes);
+        progress.emit(app, voice_id, "downloading", message, 0);
         return Ok(());
     }
 
@@ -253,11 +335,6 @@ fn download_verified(
         .map_err(|_| {
             "The voice couldn't be downloaded. Check your connection and retry.".to_string()
         })?;
-    let total = response
-        .headers()
-        .get("content-length")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok());
     let mut reader = response.body_mut().as_reader();
     let mut output = File::create(&temporary)
         .map_err(|_| "Sonelle couldn't save the voice download.".to_string())?;
@@ -277,10 +354,7 @@ fn download_verified(
             .map_err(|_| "Sonelle couldn't save the voice download.".to_string())?;
         hasher.update(&buffer[..count]);
         downloaded += count as u64;
-        let progress = total
-            .filter(|total| *total > 0)
-            .map(|total| ((downloaded.saturating_mul(100) / total).min(99)) as u8);
-        emit_progress(app, voice_id, "downloading", progress, message);
+        progress.emit(app, voice_id, "downloading", message, downloaded);
     }
     output
         .flush()
@@ -300,7 +374,10 @@ fn download_verified(
             .map_err(|_| "Sonelle couldn't replace the previous voice download.".to_string())?;
     }
     fs::rename(&temporary, destination)
-        .map_err(|_| "Sonelle couldn't finish saving the voice.".to_string())
+        .map_err(|_| "Sonelle couldn't finish saving the voice.".to_string())?;
+    progress.complete(downloaded);
+    progress.emit(app, voice_id, "downloading", message, 0);
+    Ok(())
 }
 
 fn extract_runtime(
@@ -359,7 +436,7 @@ fn managed_runtime_ready(app: &AppHandle) -> bool {
     };
     let path = managed_piper_path(&app_data_dir);
     path.exists()
-        && Command::new(&path)
+        && background_command(&path)
             .arg("--help")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -370,7 +447,7 @@ fn managed_runtime_ready(app: &AppHandle) -> bool {
 
 fn verify_runtime_at(root: &Path) -> Result<(), String> {
     let path = managed_piper_path_from_root(root);
-    let status = Command::new(&path)
+    let status = background_command(&path)
         .arg("--help")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -523,6 +600,8 @@ fn emit_progress(
     voice_id: &str,
     status: &'static str,
     progress: Option<u8>,
+    downloaded_bytes: u64,
+    total_bytes: u64,
     message: &str,
 ) {
     let _ = app.emit(
@@ -531,6 +610,8 @@ fn emit_progress(
             voice_id: voice_id.to_string(),
             status,
             progress,
+            downloaded_bytes,
+            total_bytes,
             message: message.to_string(),
         },
     );
@@ -538,7 +619,10 @@ fn emit_progress(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_runtime, file_sha256, runtime_download, voice_urls, RuntimeArchiveKind};
+    use super::{
+        extract_runtime, file_sha256, runtime_download, voice_urls, InstallationProgress,
+        RuntimeArchiveKind,
+    };
     use std::{fs, io::Write, path::PathBuf, time::SystemTime};
     use zip::{write::SimpleFileOptions, ZipWriter};
 
@@ -561,6 +645,19 @@ mod tests {
         assert!(runtime.file_name.starts_with("piper_"));
         assert_eq!(runtime.sha256.len(), 64);
         assert!(runtime.size_bytes > 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn projects_cumulative_bytes_and_percentage_across_downloads() {
+        let mut progress = InstallationProgress::new(100);
+        progress.complete(20);
+        assert_eq!(progress.snapshot(35), (55, 100, Some(55)));
+
+        progress.complete(35);
+        assert_eq!(progress.snapshot(60), (100, 100, Some(100)));
+
+        progress.finish();
+        assert_eq!(progress.snapshot(0), (100, 100, Some(100)));
     }
 
     #[test]

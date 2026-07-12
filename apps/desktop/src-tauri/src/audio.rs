@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
+use crate::background_process::background_command;
 use crate::voice_installation::managed_piper_path;
 
 const NARRATION_VOICE_CONFIG: &str =
@@ -365,7 +366,7 @@ struct PiperPythonWorker {
 
 impl PiperPythonWorker {
     fn start(python: &Path, model: &Path) -> Result<Self, String> {
-        let mut command = Command::new(python);
+        let mut command = background_command(python);
         command
             .arg("-u")
             .arg("-c")
@@ -455,7 +456,7 @@ impl PiperRunner {
 
         let managed = managed_piper_path(app_data_dir);
         if managed.exists()
-            && Command::new(&managed)
+            && background_command(&managed)
                 .arg("--help")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -482,9 +483,9 @@ impl PiperRunner {
 
     fn command(&self) -> Command {
         match self {
-            Self::Binary(path) | Self::ManagedBinary(path) => Command::new(path),
+            Self::Binary(path) | Self::ManagedBinary(path) => background_command(path),
             Self::Python(path) => {
-                let mut command = Command::new(path);
+                let mut command = background_command(path);
                 command.arg("-m").arg("piper");
                 command
             }
@@ -498,7 +499,7 @@ fn synthesize_with_managed_binary(
     text: &str,
     output: &Path,
 ) -> Result<(), String> {
-    let mut child = Command::new(executable)
+    let mut child = background_command(executable)
         .current_dir(executable.parent().unwrap_or_else(|| Path::new(".")))
         .arg("--model")
         .arg(model)

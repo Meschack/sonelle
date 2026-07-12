@@ -1,5 +1,35 @@
 import { Show } from "solid-js";
 import type { WordInsight } from "@sonelle/learning";
+import { CloseIcon, HeadphonesIcon } from "./reader-icons";
+
+interface NarrationToastProps {
+  message: string;
+  onDismiss: () => void;
+}
+
+export function NarrationToast(props: NarrationToastProps) {
+  return (
+    <section class="reader-toast-region" aria-label="Notifications">
+      <div class="reader-toast" role="status" aria-live="polite" aria-atomic="true">
+        <span class="reader-toast-icon" aria-hidden="true">
+          <HeadphonesIcon />
+        </span>
+        <div class="reader-toast-copy">
+          <strong>Narration needs attention</strong>
+          <p>{props.message}</p>
+        </div>
+        <button
+          class="reader-toast-close"
+          type="button"
+          aria-label="Close notification"
+          onClick={props.onDismiss}
+        >
+          <CloseIcon />
+        </button>
+      </div>
+    </section>
+  );
+}
 
 interface StateBlockProps {
   title: string;

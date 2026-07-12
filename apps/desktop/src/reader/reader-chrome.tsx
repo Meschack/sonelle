@@ -116,7 +116,6 @@ interface PlaybackRailProps {
   sentenceCount: number;
   status: PlaybackStatus;
   narrationStatus: string;
-  narrationNotice: string | null;
   bookmarked: boolean;
   playbackRate: number;
   onPrevious: () => void;
@@ -183,12 +182,7 @@ export function PlaybackRail(props: PlaybackRailProps) {
       </div>
       <div class="essential-actions">
         <HeadphonesIcon />
-        <span
-          classList={{ "narration-status": true, attention: props.narrationNotice != null }}
-          title={props.narrationNotice ?? props.narrationStatus}
-        >
-          {props.narrationNotice ?? props.narrationStatus}
-        </span>
+        <span class="narration-status">{props.narrationStatus}</span>
         <button
           classList={{
             "bookmark-toggle": true,
