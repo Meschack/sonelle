@@ -71,6 +71,14 @@ export function CheckIcon() {
   );
 }
 
+export function CloseIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path d="m6.53 5.47 5.47 5.47 5.47-5.47 1.06 1.06L13.06 12l5.47 5.47-1.06 1.06L12 13.06l-5.47 5.47-1.06-1.06L10.94 12 5.47 6.53l1.06-1.06Z" />
+    </svg>
+  );
+}
+
 export function HelpIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">

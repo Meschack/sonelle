@@ -478,8 +478,17 @@ function VoiceInstallationCard(props: {
         <progress
           aria-label="Preparing offline voice"
           max="100"
-          value={props.installation.progress ?? undefined}
+          value={props.installation.progress ?? 0}
         />
+        <Show when={props.installation.downloadSizeBytes > 0}>
+          <div class="voice-installation-progress-meta">
+            <strong>{props.installation.progress ?? 0}%</strong>
+            <span>
+              {formatBytes(props.installation.downloadedBytes)} /{" "}
+              {formatBytes(props.installation.downloadSizeBytes)}
+            </span>
+          </div>
+        </Show>
       </Show>
       <Show when={!isPreparing() && !isReady()}>
         <button class="primary-tool-button" type="button" onClick={props.onInstall}>

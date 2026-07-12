@@ -75,6 +75,7 @@ import { ChapterNavigator, PlaybackRail, ProductBar, ReaderTopAppBar } from "./r
 import { nextReaderChapter } from "./reader-chapter-flow";
 import { ReaderParagraph } from "./reader-content";
 import { createSampleExport, downloadJson } from "./reader-export";
+import { NarrationToast } from "./reader-feedback";
 import type { LibraryBookSummary } from "./reader-document";
 import type {
   AppView,
@@ -183,6 +184,7 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     voiceId: audioSettings().voiceId,
     status: "preparing",
     downloadSizeBytes: 0,
+    downloadedBytes: 0,
     progress: null,
     message: "Checking offline voice"
   });
@@ -342,11 +344,7 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     void voiceInstallationRepository
       .listen((installation) => {
         if (installation.voiceId === audioSettings().voiceId) {
-          setVoiceInstallation((current) => ({
-            ...current,
-            ...installation,
-            downloadSizeBytes: current.downloadSizeBytes
-          }));
+          setVoiceInstallation(installation);
         }
       })
       .then((unlisten) => {
@@ -555,6 +553,7 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     if (event.key === "Escape") {
       setSelectedWord(null);
       setReaderSearchQuery("");
+      setNarrationNotice(null);
     }
   };
 
@@ -980,7 +979,8 @@ export function ReaderExperience(props: ReaderExperienceProps) {
       ...current,
       voiceId,
       status: "preparing",
-      progress: null,
+      downloadedBytes: 0,
+      progress: 0,
       message: "Preparing this voice"
     }));
     setNarrationNotice(null);
@@ -1534,6 +1534,12 @@ export function ReaderExperience(props: ReaderExperienceProps) {
           onWidthChange={setInspectorRailWidth}
         />
 
+        <Show when={narrationNotice()}>
+          {(notice) => (
+            <NarrationToast message={notice()} onDismiss={() => setNarrationNotice(null)} />
+          )}
+        </Show>
+
         <PlaybackRail
           chapterNumber={Math.max(
             1,
@@ -1544,7 +1550,6 @@ export function ReaderExperience(props: ReaderExperienceProps) {
           sentenceCount={reader().sentences.length}
           status={playback().status}
           narrationStatus={narrationStatusLabel()}
-          narrationNotice={narrationNotice()}
           bookmarked={activeBookmark() != null}
           playbackRate={audioSettings().playbackRate}
           onPrevious={() => moveSentence(-1)}
