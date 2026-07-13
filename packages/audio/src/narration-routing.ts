@@ -7,6 +7,12 @@ export interface NarrationEngineRoute {
   language: string;
 }
 
+export type NarrationRoutingMode = "legacy-piper" | "hybrid-v1";
+
+export interface NarrationRoutingOptions {
+  mode?: NarrationRoutingMode;
+}
+
 const supertonicLanguages = new Set([
   "ar",
   "bg",
@@ -40,7 +46,14 @@ const supertonicLanguages = new Set([
   "vi"
 ]);
 
-export function routeNarrationEngine(language: string | null | undefined): NarrationEngineRoute {
+export function routeNarrationEngine(
+  language: string | null | undefined,
+  options: NarrationRoutingOptions = {}
+): NarrationEngineRoute {
+  if (options.mode === "legacy-piper") {
+    return { engineId: "piper", preparationKind: "sentence-batch", language: "en" };
+  }
+
   const normalizedLanguage = normalizeLanguageCode(language);
   if (normalizedLanguage === "en") {
     return { engineId: "kokoro", preparationKind: "passage", language: "en" };

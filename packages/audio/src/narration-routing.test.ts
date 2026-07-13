@@ -20,6 +20,14 @@ describe("narration engine routing", () => {
     });
   });
 
+  it("keeps the old Piper route available behind the legacy routing mode", () => {
+    expect(routeNarrationEngine("en-US", { mode: "legacy-piper" })).toEqual({
+      engineId: "piper",
+      preparationKind: "sentence-batch",
+      language: "en"
+    });
+  });
+
   it("routes missing and unsupported languages to the language-agnostic fallback", () => {
     expect(routeNarrationEngine(null).language).toBe("na");
     expect(routeNarrationEngine("tlh").language).toBe("na");
