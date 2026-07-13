@@ -1,6 +1,14 @@
-import { createDomainEventDispatcher, type DomainEventDispatcher } from "@sonelle/domain";
 import {
+  createDomainEventDispatcher,
+  type AnyDomainEvent,
+  type DomainEventDispatcher
+} from "@sonelle/domain";
+import {
+  createNarrationSession as createManifestNarrationSession,
   createPrefetchingNarrationGateway,
+  PiperCompatibilityAdapter,
+  type NarrationRoutingMode,
+  type NarrationSession,
   type PrefetchingNarrationGateway
 } from "@sonelle/audio";
 import type { EventSink } from "@sonelle/storage";
@@ -13,6 +21,7 @@ import {
   type AudioSettingsRepository
 } from "../audio/audio-settings-repository";
 import { createHtmlAudioPlayer, type HtmlAudioPlayer } from "../audio/html-audio-player";
+import { createHtmlManifestNarrationPlayer } from "../audio/html-manifest-narration-player";
 import { createNarrationRepository } from "../audio/narration-repository";
 import {
   createVoiceInstallationRepository,
@@ -43,23 +52,46 @@ export interface ReaderExperienceDependencies {
   eventSink: EventSink;
   htmlAudioPlayer: HtmlAudioPlayer;
   listenForBookDrops(onEvent: (event: BookDropEvent) => void): Promise<() => void>;
+  narrationSessionFactory?: (onEvent: (event: AnyDomainEvent) => void) => NarrationSession;
+  narrationSessionRoutingMode?: NarrationRoutingMode;
   narrationRepository: PrefetchingNarrationGateway;
   readerPreferencesRepository: ReaderPreferencesRepository;
   voiceInstallationRepository: VoiceInstallationRepository;
 }
 
 export function createReaderExperienceDependencies(): ReaderExperienceDependencies {
+  const eventDispatcher = createDomainEventDispatcher();
+  const htmlAudioPlayer = createHtmlAudioPlayer();
+  const narrationRepository = createPrefetchingNarrationGateway(createNarrationRepository());
+  const narrationSessionRoutingMode = developmentNarrationSessionRoutingMode();
+
   return {
     audioCacheRepository: createAudioCacheRepository(),
     audioSettingsRepository: createAudioSettingsRepository(),
     bookRepository: createBookRepository(),
     dictionaryRepository: createDictionaryRepository(),
-    eventDispatcher: createDomainEventDispatcher(),
+    eventDispatcher,
     eventSink: createDomainEventSink(),
-    htmlAudioPlayer: createHtmlAudioPlayer(),
+    htmlAudioPlayer,
     listenForBookDrops,
-    narrationRepository: createPrefetchingNarrationGateway(createNarrationRepository()),
+    narrationRepository,
+    narrationSessionFactory:
+      narrationSessionRoutingMode == null
+        ? undefined
+        : (onEvent) =>
+            createManifestNarrationSession({
+              adapter: new PiperCompatibilityAdapter(narrationRepository),
+              player: createHtmlManifestNarrationPlayer(htmlAudioPlayer),
+              onEvent
+            }),
+    narrationSessionRoutingMode,
     readerPreferencesRepository: createReaderPreferencesRepository(),
     voiceInstallationRepository: createVoiceInstallationRepository()
   };
+}
+
+function developmentNarrationSessionRoutingMode(): NarrationRoutingMode | undefined {
+  return import.meta.env.VITE_SONELLE_NARRATION_SESSION === "legacy-piper"
+    ? "legacy-piper"
+    : undefined;
 }

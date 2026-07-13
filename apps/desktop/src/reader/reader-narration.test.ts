@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createReaderNarrationOutline } from "./reader-narration";
+import {
+  createReaderNarrationOutline,
+  createReaderNarrationSessionChapter
+} from "./reader-narration";
 import { buildFixtureReaderView } from "./reader-view";
 
 describe("reader narration outline", () => {
@@ -23,5 +26,23 @@ describe("reader narration outline", () => {
         endSentenceIndex
       }))
     );
+  });
+
+  it("builds legacy Piper session chapters without leaking playback details", () => {
+    const reader = buildFixtureReaderView();
+    const chapter = createReaderNarrationSessionChapter(
+      reader,
+      "en_US-lessac-medium",
+      "legacy-piper"
+    );
+
+    expect(chapter).toMatchObject({
+      engineId: "piper",
+      modelRevision: "piper-desktop-dev",
+      voiceId: "en_US-lessac-medium",
+      passageOptions: { maxSentences: 1 }
+    });
+    expect(chapter.outline.bookId).toBe(reader.book.id);
+    expect(chapter.outline.chapterId).toBe(reader.chapter.id);
   });
 });

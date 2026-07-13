@@ -111,6 +111,10 @@ Desktop manifest playback starts prepared passage audio at the requested sentenc
 stops at the requested sentence or passage boundary, so paragraph-level assets can still drive
 sentence-level reader state.
 
+The desktop app can route playback through the manifest-aware `NarrationSession` by setting
+`VITE_SONELLE_NARRATION_SESSION=legacy-piper` during development. That mode keeps Piper as the
+preparation adapter while exercising the new session, manifest playback, and event projection path.
+
 ## Tests
 
 Package tests cover passage splitting, manifest validation, routing, catalog integrity, settings
