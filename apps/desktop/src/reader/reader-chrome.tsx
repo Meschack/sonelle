@@ -3,12 +3,12 @@ import type { PlaybackStatus, ReaderProgress } from "@sonelle/reader";
 import type { ReaderChapterNavigationItem } from "./reader-view";
 import {
   BookmarkIcon,
-  HeadphonesIcon,
   NextIcon,
   PauseIcon,
   PlayIcon,
   PreviousIcon,
   SearchIcon,
+  SpeakerIcon,
   SettingsIcon
 } from "./reader-icons";
 
@@ -115,13 +115,15 @@ interface PlaybackRailProps {
   progress: ReaderProgress;
   sentenceCount: number;
   status: PlaybackStatus;
-  narrationStatus: string;
   bookmarked: boolean;
   playbackRate: number;
+  volume: number;
   onPrevious: () => void;
   onToggle: () => void;
   onNext: () => void;
   onToggleBookmark: () => void;
+  onVolumeChange: (volume: number) => void;
+  onToggleMute: () => void;
 }
 
 export function PlaybackRail(props: PlaybackRailProps) {
@@ -181,8 +183,6 @@ export function PlaybackRail(props: PlaybackRailProps) {
         </div>
       </div>
       <div class="essential-actions">
-        <HeadphonesIcon />
-        <span class="narration-status">{props.narrationStatus}</span>
         <button
           classList={{
             "bookmark-toggle": true,
@@ -198,6 +198,30 @@ export function PlaybackRail(props: PlaybackRailProps) {
         </button>
         <span class="reading-percent">{Math.round(props.progress.bookPercent)}% read</span>
         <span class="speed-label">{props.playbackRate.toFixed(1)}x</span>
+        <div class="volume-control">
+          <button
+            classList={{ "volume-toggle": true, muted: props.volume === 0 }}
+            type="button"
+            aria-label={props.volume === 0 ? "Unmute narration" : "Mute narration"}
+            aria-pressed={props.volume === 0}
+            title={props.volume === 0 ? "Unmute narration" : "Mute narration"}
+            onClick={props.onToggleMute}
+          >
+            <SpeakerIcon />
+          </button>
+          <input
+            type="range"
+            min="0"
+            max="1.5"
+            step="0.05"
+            value={props.volume}
+            aria-label="Narration volume"
+            aria-valuetext={`${Math.round(props.volume * 100)} percent`}
+            title={`Narration volume: ${Math.round(props.volume * 100)}%`}
+            onInput={(event) => props.onVolumeChange(Number(event.currentTarget.value))}
+          />
+          <span>{Math.round(props.volume * 100)}%</span>
+        </div>
       </div>
     </footer>
   );

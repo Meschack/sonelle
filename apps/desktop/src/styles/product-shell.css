@@ -476,7 +476,7 @@
   gap: 24px;
   grid-column: 1 / -1;
   grid-row: 3;
-  grid-template-columns: 330px minmax(180px, 1fr) 260px;
+  grid-template-columns: 310px minmax(180px, 1fr) 340px;
   min-height: 84px;
   padding: 0 28px;
 }
@@ -547,20 +547,13 @@
 }
 
 .essential-actions {
-  gap: 11px;
+  gap: 10px;
 }
 
-.essential-actions > svg,
 .essential-actions > button,
 .reading-percent,
 .speed-label {
   flex: 0 0 auto;
-}
-
-.essential-actions > svg {
-  color: var(--green);
-  height: 17px;
-  width: 17px;
 }
 
 .essential-actions .bookmark-toggle {
@@ -575,10 +568,52 @@
   white-space: nowrap;
 }
 
-.narration-status {
-  flex: 1 1 auto;
-  font-size: 13px;
+.volume-control {
+  align-items: center;
+  display: grid;
+  flex: 0 0 auto;
+  gap: 7px;
+  grid-template-columns: 28px minmax(64px, 92px) 38px;
+}
+
+.volume-control .volume-toggle {
+  border-radius: 5px;
+  color: var(--muted);
+  height: 28px;
+  padding: 0;
+  width: 28px;
+}
+
+.volume-control .volume-toggle:hover,
+.volume-control .volume-toggle:focus-visible,
+.volume-control .volume-toggle.muted {
+  color: var(--green);
+}
+
+.volume-control .volume-toggle:focus-visible {
+  outline: 2px solid var(--green-2);
+  outline-offset: 1px;
+}
+
+.volume-control .volume-toggle svg {
+  height: 16px;
+  width: 16px;
+}
+
+.volume-control input[type="range"] {
+  accent-color: var(--green);
+  cursor: pointer;
+  height: 24px;
+  margin: 0;
   min-width: 0;
+  width: 100%;
+}
+
+.volume-control > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .reader-toast-region {
@@ -954,6 +989,10 @@
     grid-template-columns: 300px minmax(160px, 1fr) 220px;
   }
 
+  .essential-actions > :not(.volume-control) {
+    display: none;
+  }
+
   .library-workspace {
     grid-column: 2;
     grid-row: 2 / 5;
@@ -1122,7 +1161,11 @@
   }
 
   .essential-actions {
-    display: none;
+    justify-content: center;
+  }
+
+  .volume-control {
+    grid-template-columns: 32px minmax(120px, 220px) 42px;
   }
 
   .reader-toast-region {
