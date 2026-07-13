@@ -29,7 +29,8 @@ reader supplies only selected-voice access and UI projection callbacks. The nati
 streaming download-client interface so transport failures can be tested without network access,
 while verified temporary-file replacement remains hidden inside the installer.
 Transient narration notices are presented only as dismissible notifications. The playback bar
-contains controls and reading progress, not a competing status-message slot.
+keeps book context on the left, transport and reading progress in the center, and volume plus the
+active-sentence bookmark action on the right. It does not contain a competing status-message slot.
 Native Piper and Python commands are created through the background-process platform adapter so
 voice preparation never opens a console window over the reader on Windows.
 

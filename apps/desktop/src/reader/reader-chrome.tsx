@@ -110,13 +110,14 @@ export function ChapterNavigator(props: ChapterNavigatorProps) {
 }
 
 interface PlaybackRailProps {
-  chapterNumber: number;
+  bookTitle: string;
+  author: string;
+  coverImageSrc: string | null;
   chapterTitle: string;
   progress: ReaderProgress;
   sentenceCount: number;
   status: PlaybackStatus;
   bookmarked: boolean;
-  playbackRate: number;
   volume: number;
   onPrevious: () => void;
   onToggle: () => void;
@@ -135,6 +136,20 @@ export function PlaybackRail(props: PlaybackRailProps) {
   return (
     <footer class="audio-rail" aria-label="Playback controls">
       <div class="track-info">
+        <div class="book-cover player-cover">
+          <Show
+            when={props.coverImageSrc}
+            fallback={<span aria-hidden="true">{props.bookTitle.slice(0, 1).toUpperCase()}</span>}
+          >
+            {(source) => <img src={source()} alt={`${props.bookTitle} cover`} />}
+          </Show>
+        </div>
+        <div class="playback-copy">
+          <strong title={props.chapterTitle}>{props.chapterTitle}</strong>
+          <span title={props.author}>{props.author || "Unknown author"}</span>
+        </div>
+      </div>
+      <div class="transport-stack">
         <div class="transport-controls">
           <button
             class="icon-button"
@@ -166,38 +181,17 @@ export function PlaybackRail(props: PlaybackRailProps) {
             <NextIcon />
           </button>
         </div>
-        <div class="playback-copy">
-          <strong>
-            {props.status === "playing" ? "Playing" : "Paused on"} Chapter {props.chapterNumber}
-          </strong>
-          <span>
-            Sentence {props.progress.chapterSentenceNumber} of {props.progress.chapterSentenceCount}
-          </span>
-        </div>
-      </div>
-      <div class="transport-stack">
         <div class="audio-progress" aria-label="Reading progress">
+          <span>
+            {props.progress.chapterSentenceNumber} / {props.progress.chapterSentenceCount}
+          </span>
           <div class="progress-track" aria-hidden="true">
             <span style={{ width: `${props.progress.bookPercent}%` }} />
           </div>
+          <span>{Math.round(props.progress.bookPercent)}%</span>
         </div>
       </div>
       <div class="essential-actions">
-        <button
-          classList={{
-            "bookmark-toggle": true,
-            active: props.bookmarked
-          }}
-          type="button"
-          aria-label={props.bookmarked ? "Remove bookmark" : "Bookmark sentence"}
-          aria-pressed={props.bookmarked}
-          disabled={props.sentenceCount === 0}
-          onClick={props.onToggleBookmark}
-        >
-          <BookmarkIcon />
-        </button>
-        <span class="reading-percent">{Math.round(props.progress.bookPercent)}% read</span>
-        <span class="speed-label">{props.playbackRate.toFixed(1)}x</span>
         <div class="volume-control">
           <button
             classList={{ "volume-toggle": true, muted: props.volume === 0 }}
@@ -222,6 +216,20 @@ export function PlaybackRail(props: PlaybackRailProps) {
           />
           <span>{Math.round(props.volume * 100)}%</span>
         </div>
+        <button
+          classList={{
+            "bookmark-toggle": true,
+            active: props.bookmarked
+          }}
+          type="button"
+          aria-label={props.bookmarked ? "Remove bookmark" : "Bookmark sentence"}
+          aria-pressed={props.bookmarked}
+          disabled={props.sentenceCount === 0}
+          title={props.bookmarked ? "Remove bookmark" : "Bookmark sentence"}
+          onClick={props.onToggleBookmark}
+        >
+          <BookmarkIcon />
+        </button>
       </div>
     </footer>
   );

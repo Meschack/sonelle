@@ -1476,16 +1476,14 @@ export function ReaderExperience(props: ReaderExperienceProps) {
         </Show>
 
         <PlaybackRail
-          chapterNumber={Math.max(
-            1,
-            reader().chapters.findIndex((chapter) => chapter.id === reader().chapter.id) + 1
-          )}
+          bookTitle={reader().book.title}
+          author={reader().book.author}
+          coverImageSrc={reader().book.coverImageSrc}
           chapterTitle={reader().chapter.title}
           progress={readerProgress()}
           sentenceCount={reader().sentences.length}
           status={playback().status}
           bookmarked={activeBookmark() != null}
-          playbackRate={audioSettings().playbackRate}
           volume={audioSettings().volume}
           onPrevious={() => moveSentence(-1)}
           onToggle={togglePlayback}
