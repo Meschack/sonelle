@@ -8,6 +8,8 @@ import type {
 } from "./legacy-narration";
 
 export * from "./legacy-narration";
+export * from "./kokoro-adapter";
+export * from "./kokoro-alignment";
 export * from "./narration-contracts";
 export * from "./narration-catalog";
 export * from "./narration-manifest";

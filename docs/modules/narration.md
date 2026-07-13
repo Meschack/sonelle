@@ -7,6 +7,7 @@
 - prepared narration, sentence-span validation, request identity, stale preparation cancellation, and
   manifest-aware narration-session orchestration
 - generic native narration-pack installation and V3 prepared audio/manifest cache primitives
+- Kokoro English sentence alignment, paragraph-preparation fallback policy, and hybrid routing guard
 - versioned audio settings and per-language voice preference migration
 - deterministic passage and sentence-batch adapters for contract tests
 - the desktop adapter for native Piper preparation and playback
@@ -19,6 +20,8 @@
 - persisted reader preferences
 - native decoded playback implementation details beyond the manifest-aware player interface
 - model inference and engine-specific cache key construction, which remain native adapter concerns
+- Kokoro model redistribution, G2P packaging, and listening-QA voice selection until release gates
+  finish
 
 ## Interface
 
@@ -46,6 +49,14 @@ The native `narration_cache` module owns V3 prepared narration assets. A cache e
 `audio.wav` beside `manifest.json`, writes through a temporary directory, validates complete
 sentence sample timelines before saving or reading, tracks asset count, covered sentence count, and
 audio bytes, and keeps model revisions separated through asset identity.
+
+`KokoroNarrationAdapter` owns the engine-independent English passage contract. It accepts only
+confidently English requests, asks an injected engine for paragraph synthesis, maps timed Kokoro
+tokens back to Sonelle sentence IDs with monotonic punctuation-tolerant alignment, validates the
+manifest, and falls back to independent sentence synthesis when paragraph alignment cannot be
+trusted. The fallback trades paragraph prosody for honest highlighting; it does not approximate
+sentence boundaries. `routeNarrationEngine` supports an explicit `legacy-piper` routing mode so the
+working Piper path remains selectable while the hybrid path is still behind development wiring.
 
 `routeNarrationEngine` selects contextual Kokoro passages for English and bounded Supertonic
 sentence batches for supported non-English languages, using Supertonic's `na` mode when language is
@@ -101,6 +112,9 @@ the UI projection becomes an
 engine-independent outline without carrying Solid state into the audio module. Rust tests
 cover native request validation, cache behavior, the shared default voice catalog, platform
 selection, safe extraction, and verified voice files without making network requests.
+Kokoro tests cover punctuation-heavy English alignment, missing-token rejection, paragraph manifest
+preparation, repeated cache hits, per-sentence fallback after invalid alignment, and non-English
+request rejection.
 Native pack tests cover reuse, corruption retry, interrupted-download cleanup, progress projection,
 and unsafe path rejection. Native V3 cache tests cover atomic writes, invalid manifests, empty
 audio, model-revision separation, tampered metadata, statistics, and clearing.
