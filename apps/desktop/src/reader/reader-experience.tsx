@@ -97,7 +97,10 @@ import {
   transitionLibraryRailMode,
   type LibraryRailEvent
 } from "./library-rail-state";
-import { createSentenceNarrationRequest } from "./reader-narration";
+import {
+  createReaderNarrationSessionChapter,
+  createSentenceNarrationRequest
+} from "./reader-narration";
 import { lookupReaderWord } from "./reader-word-lookup";
 import { createReaderLibraryWorkflows } from "./reader-library-workflows";
 import { createReaderVoiceInstallationWorkflow } from "./reader-voice-installation-workflow";
@@ -138,6 +141,7 @@ export function ReaderExperience(props: ReaderExperienceProps) {
   const eventDispatcher = dependencies.eventDispatcher;
   const eventSink = dependencies.eventSink;
   const htmlAudioPlayer = dependencies.htmlAudioPlayer;
+  const narrationSessionRoutingMode = dependencies.narrationSessionRoutingMode;
   const voiceInstallationRepository = dependencies.voiceInstallationRepository;
   const libraryWorkflows = createReaderLibraryWorkflows({
     eventDispatcher,
@@ -208,6 +212,7 @@ export function ReaderExperience(props: ReaderExperienceProps) {
   let librarySearchRun = 0;
   let lastAudibleVolume = audioSettings().volume > 0 ? audioSettings().volume : 1.2;
   let nextPositionSaveIntent: PositionSaveIntent | null = null;
+  let sessionProjectedPlaybackChange = false;
   let readerSearchInput: HTMLInputElement | undefined;
   const sentenceElements = new Map<string, HTMLElement>();
   const voiceInstallationWorkflow = createReaderVoiceInstallationWorkflow({
@@ -310,6 +315,7 @@ export function ReaderExperience(props: ReaderExperienceProps) {
       if (import.meta.env.DEV) console.error("[sonelle][events] Event reaction failed.", error);
     });
   };
+  const narrationSession = dependencies.narrationSessionFactory?.(dispatchEvent) ?? null;
 
   const getSidebarBounds = (sidebar: ResizableSidebar) =>
     getSidebarResizeBounds({
@@ -362,6 +368,7 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     const settings = audioSettings();
     htmlAudioPlayer.setPlaybackRate(settings.playbackRate);
     htmlAudioPlayer.setVolume(settings.volume);
+    narrationSession?.setOutput(settings);
     audioSettingsRepository.save(settings);
   });
 
@@ -422,8 +429,10 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     const currentPlayback = playback();
     const sentence = activeSentence();
     const currentReader = reader();
+    const ignoreSessionProjection = sessionProjectedPlaybackChange;
+    sessionProjectedPlaybackChange = false;
 
-    if (currentPlayback.status !== "playing" || sentence == null) return;
+    if (ignoreSessionProjection || currentPlayback.status !== "playing" || sentence == null) return;
 
     narrationRun += 1;
     const request = createSentenceNarrationRequest(
@@ -442,6 +451,8 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     );
 
     onCleanup(() => {
+      if (sessionProjectedPlaybackChange) return;
+
       narrationRun += 1;
       stopActiveHtmlAudio();
       if (activeNarration()?.playbackMode === "native-speech") {
@@ -873,6 +884,21 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     const sentence = currentReader.sentences[activeSentenceIndex];
     if (sentence == null) return;
 
+    if (narrationSession != null && narrationSessionRoutingMode != null) {
+      narrationSession.open(
+        createReaderNarrationSessionChapter(
+          currentReader,
+          event.payload.voiceId,
+          narrationSessionRoutingMode
+        )
+      );
+      narrationSession.setOutput(audioSettings());
+      setActiveNarration(null);
+      setNarrationNotice(null);
+      await narrationSession.play(sentence.id);
+      return;
+    }
+
     const request = createSentenceNarrationRequest(currentReader, sentence, event.payload.voiceId);
     const runId = narrationRun;
     setNarrationNotice(null);
@@ -889,6 +915,7 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     }
 
     nextPositionSaveIntent = event.name === "NarrationSentenceEntered" ? "playback" : "immediate";
+    sessionProjectedPlaybackChange = true;
     setPlayback((current) =>
       projectNarrationEventToPlayback(
         current,
@@ -903,6 +930,7 @@ export function ReaderExperience(props: ReaderExperienceProps) {
   };
 
   function stopActiveHtmlAudio() {
+    narrationSession?.pause();
     htmlAudioPlayer.stop();
   }
 

@@ -1,5 +1,8 @@
 import {
   createNarrationChapterOutline,
+  routeNarrationEngine,
+  type NarrationRoutingMode,
+  type NarrationSessionChapter,
   type NarrationChapterOutline,
   type SentenceNarrationRequest
 } from "@sonelle/audio";
@@ -35,4 +38,20 @@ export function createReaderNarrationOutline(currentReader: ReaderView): Narrati
       })
     )
   });
+}
+
+export function createReaderNarrationSessionChapter(
+  currentReader: ReaderView,
+  voiceId: string,
+  routingMode: NarrationRoutingMode
+): NarrationSessionChapter {
+  const route = routeNarrationEngine(currentReader.book.language, { mode: routingMode });
+
+  return {
+    outline: createReaderNarrationOutline(currentReader),
+    engineId: route.engineId,
+    modelRevision: `${route.engineId}-desktop-dev`,
+    voiceId,
+    passageOptions: route.preparationKind === "sentence-batch" ? { maxSentences: 1 } : undefined
+  };
 }
