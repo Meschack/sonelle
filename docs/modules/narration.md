@@ -120,6 +120,9 @@ sentence-level reader state.
 The desktop app can route playback through the manifest-aware `NarrationSession` by setting
 `VITE_SONELLE_NARRATION_SESSION=legacy-piper` during development. That mode keeps Piper as the
 preparation adapter while exercising the new session, manifest playback, and event projection path.
+Setting `VITE_SONELLE_NARRATION_SESSION=hybrid-v1` uses the desktop native manifest command for
+Kokoro and Supertonic routes, allowing the new cache and IPC boundary to be tested before real
+model inference is wired in.
 
 ## Tests
 

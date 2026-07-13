@@ -6,9 +6,11 @@ import {
 import {
   createNarrationSession as createManifestNarrationSession,
   createPrefetchingNarrationGateway,
+  FakePassageNarrationAdapter,
   PiperCompatibilityAdapter,
   type NarrationRoutingMode,
   type NarrationSession,
+  type NarrationPreparationAdapter,
   type PrefetchingNarrationGateway
 } from "@sonelle/audio";
 import type { EventSink } from "@sonelle/storage";
@@ -22,6 +24,7 @@ import {
 } from "../audio/audio-settings-repository";
 import { createHtmlAudioPlayer, type HtmlAudioPlayer } from "../audio/html-audio-player";
 import { createHtmlManifestNarrationPlayer } from "../audio/html-manifest-narration-player";
+import { createNativeManifestNarrationAdapter } from "../audio/native-manifest-narration-adapter";
 import { createNarrationRepository } from "../audio/narration-repository";
 import {
   createVoiceInstallationRepository,
@@ -64,6 +67,10 @@ export function createReaderExperienceDependencies(): ReaderExperienceDependenci
   const htmlAudioPlayer = createHtmlAudioPlayer();
   const narrationRepository = createPrefetchingNarrationGateway(createNarrationRepository());
   const narrationSessionRoutingMode = developmentNarrationSessionRoutingMode();
+  const narrationPreparationAdapter = createNarrationPreparationAdapter(
+    narrationSessionRoutingMode,
+    narrationRepository
+  );
 
   return {
     audioCacheRepository: createAudioCacheRepository(),
@@ -76,11 +83,11 @@ export function createReaderExperienceDependencies(): ReaderExperienceDependenci
     listenForBookDrops,
     narrationRepository,
     narrationSessionFactory:
-      narrationSessionRoutingMode == null
+      narrationPreparationAdapter == null
         ? undefined
         : (onEvent) =>
             createManifestNarrationSession({
-              adapter: new PiperCompatibilityAdapter(narrationRepository),
+              adapter: narrationPreparationAdapter,
               player: createHtmlManifestNarrationPlayer(htmlAudioPlayer),
               onEvent
             }),
@@ -91,7 +98,24 @@ export function createReaderExperienceDependencies(): ReaderExperienceDependenci
 }
 
 function developmentNarrationSessionRoutingMode(): NarrationRoutingMode | undefined {
-  return import.meta.env.VITE_SONELLE_NARRATION_SESSION === "legacy-piper"
-    ? "legacy-piper"
-    : undefined;
+  const mode = import.meta.env.VITE_SONELLE_NARRATION_SESSION;
+  return mode === "legacy-piper" || mode === "hybrid-v1" ? mode : undefined;
+}
+
+function createNarrationPreparationAdapter(
+  routingMode: NarrationRoutingMode | undefined,
+  narrationRepository: PrefetchingNarrationGateway
+): NarrationPreparationAdapter | null {
+  if (routingMode === "legacy-piper") return new PiperCompatibilityAdapter(narrationRepository);
+  if (routingMode === "hybrid-v1") {
+    return isTauriRuntime()
+      ? createNativeManifestNarrationAdapter()
+      : new FakePassageNarrationAdapter();
+  }
+
+  return null;
+}
+
+function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
