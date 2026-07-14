@@ -168,6 +168,23 @@ Advanced overrides:
 
 If no neural local voice is available, Sonelle shows a friendly needs-attention state instead of playing robotic system speech.
 
+## Local Kokoro Engine Catalog
+
+During the Kokoro/Supertonic migration, hosted Kokoro runtime artifacts are not available yet. To
+exercise the real desktop pack installer and native Kokoro renderer against local spike artifacts:
+
+```bash
+pnpm spike:narration:setup -- --engine=kokoro
+pnpm spike:narration:models -- --engine=kokoro
+pnpm spike:narration:kokoro-export
+pnpm spike:narration:kokoro-local-catalog
+SONELLE_NARRATION_ENGINE_CATALOG=.sonelle/narration-spike/local-engine-catalog.json pnpm dev
+```
+
+The generated catalog points the installer at local `file://` artifacts while keeping the same
+SHA-256 verification and installed-pack layout used by hosted narration files. Production builds
+still need a hosted, pinned Kokoro runtime pack before the hybrid route can ship.
+
 ## CI and Releases
 
 GitHub Actions runs two workflows:

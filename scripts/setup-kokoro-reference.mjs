@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -134,7 +135,85 @@ export function setupKokoroReference(options = {}) {
     );
   }
 
+  if (options.writeLocalEngineCatalog) {
+    writeLocalKokoroEngineCatalog({ configPath: options.configPath });
+  }
+
   return { sourceDir, venvDir };
+}
+
+export function writeLocalKokoroEngineCatalog(options = {}) {
+  const config = loadNarrationSpikeConfig(options.configPath);
+  const workspace = resolve(repoRoot, config.workspace);
+  const kokoro = config.engines.find((engine) => engine.id === "kokoro");
+  if (kokoro == null) throw new Error("The narration spike does not define Kokoro.");
+
+  const artifacts = [
+    localArtifact(
+      "kokoro.onnx",
+      "assets/kokoro.onnx",
+      join(workspace, "kokoro-onnx", "kokoro.onnx")
+    ),
+    localArtifact(
+      "config.json",
+      "assets/config.json",
+      join(workspace, "sources", "kokoro", "checkpoints", "config.json")
+    ),
+    localArtifact(
+      "voices/af_heart.bin",
+      "assets/voices/af_heart.bin",
+      join(workspace, "sources", "kokoro", "kokoro.js", "voices", "af_heart.bin")
+    ),
+    localArtifact(
+      "voices/bf_emma.bin",
+      "assets/voices/bf_emma.bin",
+      join(workspace, "sources", "kokoro", "kokoro.js", "voices", "bf_emma.bin")
+    )
+  ];
+  const revision = createHash("sha256")
+    .update(artifacts.map((artifact) => artifact.sha256).join(""))
+    .digest("hex")
+    .slice(0, 40);
+  const outputPath = options.outputPath ?? join(workspace, "local-engine-catalog.json");
+  const localKokoro = {
+    id: "kokoro",
+    source: kokoro.source,
+    model: {
+      repository: "local/sonelle-kokoro-runtime",
+      revision,
+      artifacts
+    }
+  };
+  const output = {
+    schemaVersion: 1,
+    workspace: config.workspace,
+    engines: config.engines.map((engine) => (engine.id === "kokoro" ? localKokoro : engine))
+  };
+
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+  console.log(`\nLocal Kokoro engine catalog: ${outputPath}`);
+  console.log("Use SONELLE_NARRATION_ENGINE_CATALOG to point the desktop app at this file.");
+  return { outputPath, revision, artifacts };
+}
+
+function localArtifact(remotePath, targetPath, path) {
+  if (!existsSync(path)) {
+    throw new Error(`Kokoro runtime artifact is missing: ${path}`);
+  }
+  return {
+    remotePath,
+    targetPath,
+    sizeBytes: statSync(path).size,
+    sha256: sha256(path),
+    url: pathToFileURL(path).href
+  };
+}
+
+function sha256(path) {
+  const hash = createHash("sha256");
+  hash.update(readFileSync(path));
+  return hash.digest("hex");
 }
 
 function run(command, args, label, cwd, env) {
@@ -151,9 +230,19 @@ function hasPythonPackageVersion(python, packageName, expectedVersion, env) {
 }
 
 if (process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  setupKokoroReference({
-    exportOnnx: process.argv.includes("--export-onnx"),
-    runCorpus: process.argv.includes("--corpus"),
-    writeNativeFixture: process.argv.includes("--native-fixture")
-  });
+  const exportOnnx = process.argv.includes("--export-onnx");
+  const runCorpus = process.argv.includes("--corpus");
+  const writeNativeFixture = process.argv.includes("--native-fixture");
+  const writeLocalEngineCatalog = process.argv.includes("--local-engine-catalog");
+
+  if (writeLocalEngineCatalog && !exportOnnx && !runCorpus && !writeNativeFixture) {
+    writeLocalKokoroEngineCatalog();
+  } else {
+    setupKokoroReference({
+      exportOnnx,
+      runCorpus,
+      writeNativeFixture,
+      writeLocalEngineCatalog
+    });
+  }
 }
