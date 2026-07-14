@@ -66,6 +66,7 @@ struct EngineArtifactCatalogEntry {
     target_path: String,
     size_bytes: u64,
     sha256: String,
+    url: Option<String>,
 }
 
 struct NativeEngineDownloadClient;
@@ -76,6 +77,23 @@ impl NarrationPackDownloadClient for NativeEngineDownloadClient {
         url: &str,
         on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), String>,
     ) -> Result<(), String> {
+        if let Some(path) = file_url_path(url) {
+            let mut file = fs::File::open(path).map_err(|_| {
+                "The narration files couldn't be opened. Check the catalog and retry.".to_string()
+            })?;
+            let mut buffer = [0_u8; 64 * 1024];
+
+            loop {
+                let count = file.read(&mut buffer).map_err(|_| {
+                    "The narration file read was interrupted. Please retry.".to_string()
+                })?;
+                if count == 0 {
+                    return Ok(());
+                }
+                on_chunk(&buffer[..count])?;
+            }
+        }
+
         let mut response = ureq::get(url)
             .header("User-Agent", "Sonelle narration engine installer")
             .call()
@@ -190,7 +208,14 @@ fn engine_pack_root(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn engine_pack(engine_id: &str) -> Result<NarrationPack, String> {
-    let catalog: EngineCatalog = serde_json::from_str(ENGINE_CATALOG)
+    engine_pack_from_catalog_json(engine_id, &engine_catalog_json()?)
+}
+
+fn engine_pack_from_catalog_json(
+    engine_id: &str,
+    catalog_json: &str,
+) -> Result<NarrationPack, String> {
+    let catalog: EngineCatalog = serde_json::from_str(catalog_json)
         .map_err(|_| "Offline narration catalog is invalid.".to_string())?;
     let entry = catalog
         .engines
@@ -208,15 +233,34 @@ fn engine_pack(engine_id: &str) -> Result<NarrationPack, String> {
             .map(|artifact| NarrationPackArtifact {
                 id: artifact.target_path.clone(),
                 relative_path: PathBuf::from(&artifact.target_path),
-                url: format!(
-                    "https://huggingface.co/{}/resolve/{}/{}",
-                    entry.model.repository, entry.model.revision, artifact.remote_path
-                ),
+                url: artifact.url.unwrap_or_else(|| {
+                    format!(
+                        "https://huggingface.co/{}/resolve/{}/{}",
+                        entry.model.repository, entry.model.revision, artifact.remote_path
+                    )
+                }),
                 sha256: artifact.sha256,
                 size_bytes: artifact.size_bytes,
             })
             .collect(),
     })
+}
+
+fn engine_catalog_json() -> Result<String, String> {
+    match std::env::var("SONELLE_NARRATION_ENGINE_CATALOG") {
+        Ok(path) if !path.trim().is_empty() => fs::read_to_string(path)
+            .map_err(|_| "Offline narration catalog is invalid.".to_string()),
+        _ => Ok(ENGINE_CATALOG.to_string()),
+    }
+}
+
+fn file_url_path(url: &str) -> Option<PathBuf> {
+    let path = url.strip_prefix("file://")?;
+    if cfg!(windows) {
+        Some(PathBuf::from(path.strip_prefix('/').unwrap_or(path)))
+    } else {
+        Some(PathBuf::from(path))
+    }
 }
 
 fn pack_destination(root: &Path, pack: &NarrationPack) -> PathBuf {
@@ -259,7 +303,11 @@ fn emit_engine_progress(
 
 #[cfg(test)]
 mod tests {
-    use super::{engine_is_ready_at, engine_pack, engine_status_at};
+    use super::{
+        engine_is_ready_at, engine_pack, engine_status_at, file_url_path,
+        NativeEngineDownloadClient,
+    };
+    use crate::narration_pack::NarrationPackDownloadClient;
     use std::{
         fs,
         path::PathBuf,
@@ -278,6 +326,78 @@ mod tests {
             .starts_with("https://huggingface.co/hexgrad/Kokoro-82M/resolve/"));
         assert_eq!(supertonic.id, "supertonic");
         assert_eq!(supertonic.artifacts.len(), 10);
+    }
+
+    #[test]
+    fn honors_explicit_catalog_artifact_urls() {
+        let root = test_root("engine-catalog-override");
+        let catalog = root.join("engines.json");
+        fs::write(
+            &catalog,
+            r#"{
+              "schemaVersion": 1,
+              "engines": [
+                {
+                  "id": "kokoro",
+                  "model": {
+                    "repository": "local/sonelle-kokoro",
+                    "revision": "0123456789012345678901234567890123456789",
+                    "artifacts": [
+                      {
+                        "remotePath": "ignored.bin",
+                        "targetPath": "assets/kokoro.onnx",
+                        "sizeBytes": 7,
+                        "sha256": "8328d302e64b688068affcad021367dad44992236ca84add38713735f9a9a1f0",
+                        "url": "file:///tmp/kokoro.onnx"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }"#,
+        )
+        .expect("catalog should write");
+        let catalog_json = fs::read_to_string(&catalog).expect("catalog should read");
+        let pack = super::engine_pack_from_catalog_json("kokoro", &catalog_json)
+            .expect("override catalog should load");
+
+        assert_eq!(pack.revision, "0123456789012345678901234567890123456789");
+        assert_eq!(
+            pack.artifacts[0].relative_path,
+            PathBuf::from("assets/kokoro.onnx")
+        );
+        assert_eq!(pack.artifacts[0].url, "file:///tmp/kokoro.onnx");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn native_client_streams_local_catalog_files() {
+        let root = test_root("engine-file-url");
+        let source = root.join("model.onnx");
+        fs::write(&source, b"Sonelle").expect("source file");
+        let mut contents = Vec::new();
+        let client = NativeEngineDownloadClient;
+
+        client
+            .stream(
+                &format!("file://{}", source.to_string_lossy()),
+                &mut |chunk| {
+                    contents.extend_from_slice(chunk);
+                    Ok(())
+                },
+            )
+            .expect("local file should stream");
+
+        assert_eq!(contents, b"Sonelle");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn resolves_file_urls_to_paths() {
+        assert_eq!(file_url_path("https://example.test/model.onnx"), None);
+        assert!(file_url_path("file:///tmp/model.onnx")
+            .expect("file URL")
+            .ends_with("model.onnx"));
     }
 
     #[test]

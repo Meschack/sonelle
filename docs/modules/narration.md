@@ -51,6 +51,9 @@ The native `narration_engine_pack` module turns the pinned Kokoro and Supertonic
 desktop installable engine packs. It exposes readiness and installation commands for the hybrid
 engines, stores verified model artifacts under the app data directory, and emits progress facts
 without asking reader UI code to know model repositories, revisions, or file hashes.
+For local Kokoro QA before hosted runtime artifacts exist, the module accepts
+`SONELLE_NARRATION_ENGINE_CATALOG` and explicit catalog artifact URLs. The generated local catalog
+still goes through the same SHA-256 verification and installed-pack record as hosted downloads.
 
 The native `narration_cache` module owns V3 prepared narration assets. A cache entry stores
 `audio.wav` beside `manifest.json`, writes through a temporary directory, validates complete

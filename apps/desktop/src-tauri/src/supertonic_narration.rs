@@ -26,15 +26,23 @@ pub fn render_supertonic_manifest(
             .ok_or_else(|| "Sonelle couldn't open offline narration files.".to_string())?,
         false,
     )
-    .map_err(|_| "Sonelle couldn't start offline narration.".to_string())?;
-    let style = supertonic_helper::load_voice_style(&[style_path], false)
-        .map_err(|_| "Sonelle couldn't open the selected narration voice.".to_string())?;
+    .map_err(|error| {
+        eprintln!("Supertonic startup failed: {error}");
+        "Sonelle couldn't start offline narration.".to_string()
+    })?;
+    let style = supertonic_helper::load_voice_style(&[style_path], false).map_err(|error| {
+        eprintln!("Supertonic voice style failed: {error}");
+        "Sonelle couldn't open the selected narration voice.".to_string()
+    })?;
     let mut sentence_audio = Vec::with_capacity(request.passage.sentences.len());
 
     for sentence in &request.passage.sentences {
         let (audio, _duration) = tts
             .call(sentence.text.trim(), &language, &style, 8, 1.05, 0.3)
-            .map_err(|_| "Sonelle couldn't prepare this narration.".to_string())?;
+            .map_err(|error| {
+                eprintln!("Supertonic synthesis failed: {error}");
+                "Sonelle couldn't prepare this narration.".to_string()
+            })?;
         sentence_audio.push(audio);
     }
 
@@ -146,7 +154,16 @@ mod tests {
     fn renders_real_supertonic_audio_from_local_assets() {
         let root = std::env::var("SONELLE_SUPERTONIC_FIXTURE_ROOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("../../.sonelle/narration-spike/sources/supertonic"));
+            .unwrap_or_else(|_| {
+                [
+                    PathBuf::from(".sonelle/narration-spike/sources/supertonic"),
+                    PathBuf::from("../../.sonelle/narration-spike/sources/supertonic"),
+                    PathBuf::from("../../../.sonelle/narration-spike/sources/supertonic"),
+                ]
+                .into_iter()
+                .find(|candidate| candidate.join("assets/onnx/tts.json").is_file())
+                .expect("Supertonic spike assets should exist")
+            });
         let rendered = render_supertonic_manifest(&root, &request())
             .expect("real Supertonic synthesis should render");
 
