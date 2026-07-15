@@ -4,6 +4,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+use crate::error_log::record_native_error;
 use crate::kokoro_narration::{
     prepare_kokoro_input_from_phonemes, KokoroRuntime, KOKORO_SAMPLE_RATE,
 };
@@ -298,11 +299,27 @@ fn phonemize_kokoro_sentence(
 }
 
 fn first_existing_path(root: &Path, relative_paths: &[&str]) -> Result<PathBuf, String> {
-    relative_paths
+    let candidates = relative_paths
         .iter()
         .map(|relative| root.join(relative))
-        .find(|path| path.is_file())
-        .ok_or_else(|| "Sonelle couldn't open English narration files.".to_string())
+        .collect::<Vec<_>>();
+    if let Some(path) = candidates.iter().find(|path| path.is_file()) {
+        return Ok(path.clone());
+    }
+
+    record_native_error(
+        "kokoro.assets",
+        &format!(
+            "root={} missing={}",
+            root.display(),
+            candidates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    );
+    Err("Sonelle couldn't open English narration files.".to_string())
 }
 
 fn kokoro_voice_file(voice_id: &str) -> String {

@@ -9,12 +9,12 @@ Accepted
 ## Context
 
 The native Kokoro renderer needs a duration-preserving `kokoro.onnx`, `config.json`, and `.bin`
-voice-style files. The public spike catalog still points at Kokoro's PyTorch checkpoint and `.pt`
-voice files, which are useful for the Python reference but not directly runnable by Sonelle's
-native manifest path.
+voice-style files. The Python reference uses Kokoro's PyTorch checkpoint and `.pt` voice files,
+which are useful for reference generation but not directly runnable by Sonelle's native manifest
+path.
 
-Until the production Kokoro runtime pack is hosted and pinned, the desktop app still needs a way to
-exercise the real installer, cache, and renderer path against the exported local spike artifacts.
+The production catalog therefore needs a separate pinned ONNX model, configuration, and `.bin`
+voice-style artifacts for the native manifest path.
 
 ## Decision
 
@@ -39,7 +39,7 @@ native renderer's installed-pack layout under `assets/`.
 
 - Local desktop QA can install and render Kokoro through the real pack manager before production
   hosting exists.
-- The default bundled catalog remains unchanged, so production builds do not silently depend on a
-  developer's filesystem.
-- The production-ready gate still requires a hosted, license-reviewed, pinned Kokoro runtime pack
-  with the same installed layout.
+- The production catalog points to a pinned ONNX export, matching configuration, and pinned `.bin`
+  voice-style files, all installed under the layout expected by the native renderer.
+- Local development can still override the catalog with file URLs, keeping the same verified pack
+  installer path available for runtime QA.

@@ -427,9 +427,31 @@ mod tests {
 
         assert_eq!(kokoro.id, "kokoro");
         assert_eq!(kokoro.artifacts.len(), 4);
+        assert_eq!(
+            kokoro.artifacts[0].relative_path,
+            PathBuf::from("assets/kokoro.onnx")
+        );
         assert!(kokoro.artifacts[0]
             .url
+            .starts_with("https://huggingface.co/robertknight/kokoro-onnx/resolve/"));
+        assert_eq!(
+            kokoro.artifacts[1].relative_path,
+            PathBuf::from("assets/config.json")
+        );
+        assert_eq!(
+            kokoro.artifacts[2].relative_path,
+            PathBuf::from("assets/voices/af_heart.bin")
+        );
+        assert_eq!(
+            kokoro.artifacts[3].relative_path,
+            PathBuf::from("assets/voices/bf_emma.bin")
+        );
+        assert!(kokoro.artifacts[1]
+            .url
             .starts_with("https://huggingface.co/hexgrad/Kokoro-82M/resolve/"));
+        assert!(kokoro.artifacts[2]
+            .url
+            .starts_with("https://raw.githubusercontent.com/hexgrad/kokoro/"));
         assert_eq!(supertonic.id, "supertonic");
         assert_eq!(supertonic.artifacts.len(), 10);
     }
