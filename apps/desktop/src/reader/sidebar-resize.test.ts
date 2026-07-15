@@ -24,3 +24,4 @@ describe("sidebar resizing", () => {
     expect(clampSidebarWidth(460, { min: 220, max: 400 })).toBe(400);
   });
 });
+// @vitest-environment happy-dom

@@ -3,7 +3,7 @@ import type {
   NarrationPreparationAdapter,
   NarrationPreparationRequest,
   PreparedNarration
-} from "@sonelle/audio";
+} from "@sonelle/audio/narration";
 
 type NativeManifestNarration = PreparedNarration;
 
@@ -29,7 +29,12 @@ export function createNativeManifestNarrationAdapter(
       throwIfAborted(signal);
       const narration = await abortable(
         invokeCommand<NativeManifestNarration>("prepare_manifest_narration", { request }),
-        signal
+        signal,
+        () => {
+          void invokeCommand("cancel_manifest_narration", { requestId: request.requestId }).catch(
+            () => undefined
+          );
+        }
       );
       throwIfAborted(signal);
 
@@ -41,12 +46,19 @@ export function createNativeManifestNarrationAdapter(
   };
 }
 
-function abortable<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+function abortable<T>(
+  operation: Promise<T>,
+  signal: AbortSignal | undefined,
+  onAbort: () => void
+): Promise<T> {
   if (signal == null) return operation;
   if (signal.aborted) return Promise.reject(abortReason(signal));
 
   return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(abortReason(signal));
+    const abort = () => {
+      onAbort();
+      reject(abortReason(signal));
+    };
     signal.addEventListener("abort", abort, { once: true });
     operation.then(
       (value) => {

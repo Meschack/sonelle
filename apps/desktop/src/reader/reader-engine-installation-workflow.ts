@@ -40,22 +40,16 @@ export function createReaderEngineInstallationWorkflow(
     event: DomainEvent<"OfflineNarrationFilesInstallationRequested">
   ) => {
     const engineId = event.payload.engineId as NarrationEngineId;
-    dependencies.projectInstallation(preparingEngineInstallation(engineId));
-    dependencies.projectNotice(null);
-
-    let installation: EngineInstallationState;
     try {
-      installation = await dependencies.repository.install(engineId);
+      await dependencies.repository.install(engineId);
     } catch (error) {
       const reason = dependencies.friendlyError(error);
-      dependencies.projectInstallation(failedEngineInstallation(engineId, reason));
       await dependencies.eventDispatcher.dispatch(
         createDomainEvent("OfflineNarrationFilesInstallationFailed", { engineId, reason })
       );
       return;
     }
 
-    dependencies.projectInstallation(installation);
     await dependencies.eventDispatcher.dispatch(
       createDomainEvent("OfflineNarrationFilesInstallationReady", { engineId })
     );
@@ -90,25 +84,64 @@ export function createReaderEngineInstallationWorkflow(
         ),
         dependencies.eventDispatcher.subscribe(
           "OfflineNarrationFilesInstallationRequested",
+          (event) => {
+            const engineId = event.payload.engineId as NarrationEngineId;
+            dependencies.projectInstallation(preparingEngineInstallation(engineId));
+            dependencies.projectNotice(null);
+          }
+        ),
+        dependencies.eventDispatcher.subscribe(
+          "OfflineNarrationFilesInstallationRequested",
           handleRequested
+        ),
+        dependencies.eventDispatcher.subscribe(
+          "OfflineNarrationFilesInstallationProgressed",
+          (event) =>
+            dependencies.projectInstallation({
+              ...event.payload,
+              engineId: event.payload.engineId as NarrationEngineId
+            })
         ),
         dependencies.eventDispatcher.subscribe("OfflineNarrationFilesInstallationReady", (event) =>
           dependencies.eventSink.append(event)
         ),
-        dependencies.eventDispatcher.subscribe("OfflineNarrationFilesInstallationReady", () => {
-          dependencies.projectNotice(null);
-        }),
+        dependencies.eventDispatcher.subscribe(
+          "OfflineNarrationFilesInstallationReady",
+          (event) => {
+            dependencies.projectNotice(null);
+            const engineId = event.payload.engineId as NarrationEngineId;
+            return dependencies.repository
+              .getStatus(engineId)
+              .then(dependencies.projectInstallation);
+          }
+        ),
         dependencies.eventDispatcher.subscribe("OfflineNarrationFilesInstallationFailed", (event) =>
           dependencies.eventSink.append(event)
         ),
-        dependencies.eventDispatcher.subscribe("OfflineNarrationFilesInstallationFailed", (event) =>
-          dependencies.projectNotice(event.payload.reason)
+        dependencies.eventDispatcher.subscribe(
+          "OfflineNarrationFilesInstallationFailed",
+          (event) => {
+            dependencies.projectInstallation(
+              failedEngineInstallation(
+                event.payload.engineId as NarrationEngineId,
+                event.payload.reason
+              )
+            );
+            dependencies.projectNotice(event.payload.reason);
+          }
         )
       ];
       let unlisten: () => void;
       try {
         unlisten = await dependencies.repository.listen((installation) => {
-          dependencies.projectInstallation(installation);
+          void dependencies.eventDispatcher
+            .dispatch(
+              createDomainEvent("OfflineNarrationFilesInstallationProgressed", {
+                ...installation,
+                status: installation.status === "ready" ? "ready" : "preparing"
+              })
+            )
+            .catch(reportReactionFailure);
         });
       } catch (error) {
         subscriptions.forEach((unsubscribe) => unsubscribe());
@@ -128,6 +161,7 @@ function preparingEngineInstallation(engineId: NarrationEngineId): EngineInstall
   return {
     engineId,
     status: "preparing",
+    modelRevision: "",
     downloadSizeBytes: 0,
     downloadedBytes: 0,
     progress: 0,

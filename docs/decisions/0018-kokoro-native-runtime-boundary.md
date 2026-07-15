@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for the hybrid development path. English text preprocessing remains pending.
+Accepted. English preprocessing is supplied by decision 0019 and manifest rendering by decision 0020.
 
 ## Context
 
@@ -46,8 +46,8 @@ because sentence highlighting would have to become estimated or separately force
 
 ## Events
 
-No domain event is introduced by this slice. It is a native adapter boundary used by future
-`AudioPreparationRequested` handling.
+No provider-specific event is introduced. The runtime is called behind the shared
+`NarrationPreparationStarted` and `PassageNarrationReady` lifecycle.
 
 ## Testing
 

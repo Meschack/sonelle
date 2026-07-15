@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { isTauriRuntime } from "../platform/tauri-runtime";
 
 export type NarrationEngineId = "kokoro" | "supertonic";
 export type EngineInstallationReadiness = "not-installed" | "preparing" | "ready" | "failed";
@@ -7,6 +8,7 @@ export type EngineInstallationReadiness = "not-installed" | "preparing" | "ready
 export interface EngineInstallationState {
   engineId: NarrationEngineId;
   status: EngineInstallationReadiness;
+  modelRevision: string;
   downloadSizeBytes: number;
   downloadedBytes: number;
   progress: number | null;
@@ -16,6 +18,7 @@ export interface EngineInstallationState {
 interface NativeEngineInstallationStatus {
   engineId: NarrationEngineId;
   status: "not-installed" | "ready";
+  modelRevision: string;
   downloadSizeBytes: number;
   message: string;
 }
@@ -83,6 +86,7 @@ export function failedEngineInstallation(
   return {
     engineId,
     status: "failed",
+    modelRevision: "",
     downloadSizeBytes: 0,
     downloadedBytes: 0,
     progress: null,
@@ -96,6 +100,7 @@ export function projectEngineInstallationProgress(
   return {
     engineId: payload.engineId,
     status: payload.status === "ready" ? "ready" : "preparing",
+    modelRevision: "",
     downloadSizeBytes: payload.totalBytes,
     downloadedBytes: payload.downloadedBytes,
     progress: payload.progress,
@@ -115,13 +120,10 @@ function readyBrowserEngine(engineId: NarrationEngineId): EngineInstallationStat
   return {
     engineId,
     status: "ready",
+    modelRevision: `${engineId}-browser`,
     downloadSizeBytes: 0,
     downloadedBytes: 0,
     progress: 100,
     message: "Ready to listen offline."
   };
-}
-
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }

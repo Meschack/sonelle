@@ -146,3 +146,17 @@ pub struct BookExportView {
     pub position: Option<ReadingPositionView>,
     pub bookmarks: Vec<BookmarkView>,
 }
+
+#[derive(Debug, Clone)]
+pub struct LegacyBookLanguageSource {
+    pub book_id: String,
+    pub source_path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LegacyChapterText {
+    pub book_id: String,
+    pub chapter_id: String,
+    pub body: String,
+    pub sentence_count: usize,
+}

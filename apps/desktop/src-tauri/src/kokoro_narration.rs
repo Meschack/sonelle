@@ -1,13 +1,19 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use ndarray::{Array1, Array2};
-use ort::{session::Session, value::Value};
+use ort::{
+    ep::CPU,
+    session::{RunOptions, Session},
+    value::Value,
+};
 use serde::Deserialize;
 
 use crate::narration_cache::NarrationSentenceSpan;
 
 pub const KOKORO_SAMPLE_RATE: u32 = 24_000;
 const KOKORO_SAMPLES_PER_DURATION_UNIT: u64 = 600;
+const DEFAULT_KOKORO_ONNX_THREADS: usize = 1;
+const MAX_KOKORO_ONNX_THREADS: usize = 4;
 
 #[derive(Debug, Clone)]
 pub struct KokoroPreparedInput {
@@ -20,6 +26,75 @@ pub struct KokoroPreparedInput {
 pub struct KokoroInferenceOutput {
     pub samples: Vec<f32>,
     pub durations: Vec<i64>,
+}
+
+pub struct KokoroRuntime {
+    model_path: std::path::PathBuf,
+    session: Session,
+}
+
+impl KokoroRuntime {
+    pub fn open(model_path: &Path) -> Result<Self, String> {
+        let session = bounded_kokoro_session_builder(kokoro_onnx_thread_count())?
+            .commit_from_file(model_path)
+            .map_err(|_| "Sonelle couldn't open English narration files.".to_string())?;
+        Ok(Self {
+            model_path: model_path.to_path_buf(),
+            session,
+        })
+    }
+
+    pub fn matches(&self, model_path: &Path) -> bool {
+        self.model_path == model_path
+    }
+
+    pub fn render(&mut self, input: &KokoroPreparedInput) -> Result<KokoroInferenceOutput, String> {
+        let run_options = RunOptions::new()
+            .map_err(|_| "Sonelle couldn't start English narration.".to_string())?;
+        self.render_with_options(input, &run_options)
+    }
+
+    pub fn render_with_options(
+        &mut self,
+        input: &KokoroPreparedInput,
+        run_options: &RunOptions,
+    ) -> Result<KokoroInferenceOutput, String> {
+        validate_prepared_input(input)?;
+        run_kokoro_session(&mut self.session, input, run_options)
+    }
+}
+
+fn bounded_kokoro_session_builder(
+    thread_count: usize,
+) -> Result<ort::session::builder::SessionBuilder, String> {
+    let builder =
+        Session::builder().map_err(|_| "Sonelle couldn't start English narration.".to_string())?;
+    let builder = builder
+        .with_intra_threads(thread_count)
+        .map_err(|_| "Sonelle couldn't start English narration.".to_string())?;
+    let builder = builder
+        .with_inter_threads(1)
+        .map_err(|_| "Sonelle couldn't start English narration.".to_string())?;
+    let builder = builder
+        .with_parallel_execution(false)
+        .map_err(|_| "Sonelle couldn't start English narration.".to_string())?;
+    let builder = builder
+        .with_memory_pattern(false)
+        .map_err(|_| "Sonelle couldn't start English narration.".to_string())?;
+    builder
+        .with_execution_providers([CPU::default().with_arena_allocator(false).build()])
+        .map_err(|_| "Sonelle couldn't start English narration.".to_string())
+}
+
+fn kokoro_onnx_thread_count() -> usize {
+    bounded_thread_count(std::env::var("SONELLE_KOKORO_ONNX_THREADS").ok().as_deref())
+}
+
+fn bounded_thread_count(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| (1..=MAX_KOKORO_ONNX_THREADS).contains(value))
+        .unwrap_or(DEFAULT_KOKORO_ONNX_THREADS)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,13 +119,7 @@ pub fn render_kokoro_prepared_input(
     model_path: &Path,
     input: &KokoroPreparedInput,
 ) -> Result<KokoroInferenceOutput, String> {
-    validate_prepared_input(input)?;
-    let mut session = Session::builder()
-        .map_err(|_| "Sonelle couldn't start English narration.".to_string())?
-        .commit_from_file(model_path)
-        .map_err(|_| "Sonelle couldn't open English narration files.".to_string())?;
-
-    run_kokoro_session(&mut session, input)
+    KokoroRuntime::open(model_path)?.render(input)
 }
 
 pub fn prepare_kokoro_input_from_phonemes(
@@ -263,6 +332,7 @@ fn phonemes_to_input_ids(config: &KokoroConfig, phonemes: &str) -> Vec<i64> {
 fn run_kokoro_session(
     session: &mut Session,
     input: &KokoroPreparedInput,
+    run_options: &RunOptions,
 ) -> Result<KokoroInferenceOutput, String> {
     let input_ids = Array2::from_shape_vec((1, input.input_ids.len()), input.input_ids.clone())
         .map_err(|_| "English narration input is invalid.".to_string())?;
@@ -277,11 +347,14 @@ fn run_kokoro_session(
         Value::from_array(speed).map_err(|_| "English narration speed is invalid.".to_string())?;
 
     let outputs = session
-        .run(ort::inputs! {
-            "input_ids" => &input_ids,
-            "style" => &style,
-            "speed" => &speed,
-        })
+        .run_with_options(
+            ort::inputs! {
+                "input_ids" => &input_ids,
+                "style" => &style,
+                "speed" => &speed,
+            },
+            run_options,
+        )
         .map_err(|_| "Sonelle couldn't prepare this English narration.".to_string())?;
     let (_, samples) = outputs["waveform"]
         .try_extract_tensor::<f32>()
@@ -321,11 +394,20 @@ mod tests {
     use serde::Deserialize;
 
     use super::{
-        load_kokoro_voice_style, prepare_kokoro_input_from_phonemes,
+        bounded_thread_count, load_kokoro_voice_style, prepare_kokoro_input_from_phonemes,
         prepare_kokoro_passage_from_sentence_phonemes, project_kokoro_sentence_spans,
         render_kokoro_prepared_input, KokoroPreparedInput, KokoroSentencePhonemes,
         KOKORO_SAMPLE_RATE,
     };
+
+    #[test]
+    fn bounds_kokoro_onnx_threads() {
+        assert_eq!(bounded_thread_count(None), 1);
+        assert_eq!(bounded_thread_count(Some("2")), 2);
+        assert_eq!(bounded_thread_count(Some("0")), 1);
+        assert_eq!(bounded_thread_count(Some("5")), 1);
+        assert_eq!(bounded_thread_count(Some("not-a-number")), 1);
+    }
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]

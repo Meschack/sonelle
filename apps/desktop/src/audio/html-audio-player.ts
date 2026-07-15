@@ -216,28 +216,41 @@ async function fetchAudioData(
 function createElementAudioPlayback(sourceUrl: string): AudioPlayback {
   const audio = new Audio(sourceUrl);
   let stopTimer: ReturnType<typeof setTimeout> | null = null;
+  let stopAtSeconds: number | null = null;
+  let ended: (() => void) | null = null;
+
+  const scheduleStop = () => {
+    if (stopTimer != null) clearTimeout(stopTimer);
+    stopTimer = null;
+    if (stopAtSeconds == null || ended == null) return;
+    const remainingMediaSeconds = Math.max(0, stopAtSeconds - audio.currentTime);
+    stopTimer = setTimeout(
+      () => {
+        stopTimer = null;
+        audio.pause();
+        ended?.();
+      },
+      (remainingMediaSeconds / Math.max(audio.playbackRate, 0.01)) * 1_000
+    );
+  };
 
   return {
     setPlaybackRate(playbackRate) {
       audio.playbackRate = playbackRate;
+      scheduleStop();
     },
     setVolume(volume) {
       audio.volume = Math.min(1, clampVolume(volume));
     },
     async start(handlers, range) {
+      ended = handlers.ended;
       audio.onended = handlers.ended;
       audio.onerror = () => handlers.failed(mediaPlaybackError(audio));
       if (range != null) {
         audio.currentTime = range.offsetSeconds;
         if (range.durationSeconds != null) {
-          stopTimer = setTimeout(
-            () => {
-              stopTimer = null;
-              audio.pause();
-              handlers.ended();
-            },
-            Math.max(0, range.durationSeconds * 1_000)
-          );
+          stopAtSeconds = range.offsetSeconds + range.durationSeconds;
+          scheduleStop();
         }
       }
       await audio.play();
@@ -248,6 +261,7 @@ function createElementAudioPlayback(sourceUrl: string): AudioPlayback {
         stopTimer = null;
       }
       audio.pause();
+      ended = null;
     },
     dispose() {
       if (stopTimer != null) {
@@ -256,6 +270,7 @@ function createElementAudioPlayback(sourceUrl: string): AudioPlayback {
       }
       audio.onended = null;
       audio.onerror = null;
+      ended = null;
     }
   };
 }

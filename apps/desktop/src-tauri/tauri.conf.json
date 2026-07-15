@@ -23,7 +23,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/audio/**", "$APPDATA/covers/**"]
+        "scope": ["$APPDATA/audio/**", "$APPDATA/covers/**", "$APPDATA/narration-v3/**"]
       }
     }
   },

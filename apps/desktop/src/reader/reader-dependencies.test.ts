@@ -1,21 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
+  availableHybridNarrationVoicesForLanguage,
   createNarrationPreparationAdapterForMode,
   resolveDevelopmentNarrationSessionRoutingMode
 } from "./reader-dependencies";
 
 describe("reader narration session dependency selection", () => {
+  it("offers a provider's voices only after its offline files are ready", () => {
+    const readyKokoro = {
+      engineId: "kokoro" as const,
+      status: "ready" as const,
+      modelRevision: "test",
+      downloadSizeBytes: 10,
+      downloadedBytes: 10,
+      progress: 100,
+      message: "Ready"
+    };
+
+    expect(availableHybridNarrationVoicesForLanguage("en", {})).toEqual([]);
+    expect(
+      availableHybridNarrationVoicesForLanguage("en", { kokoro: readyKokoro }).map(
+        (voice) => voice.id
+      )
+    ).toEqual(["kokoro:af-heart", "kokoro:bf-emma"]);
+    expect(availableHybridNarrationVoicesForLanguage("fr", { kokoro: readyKokoro })).toEqual([]);
+  });
+
   it("accepts only explicit development narration session modes", () => {
     expect(resolveDevelopmentNarrationSessionRoutingMode("legacy-piper")).toBe("legacy-piper");
     expect(resolveDevelopmentNarrationSessionRoutingMode("hybrid-v1")).toBe("hybrid-v1");
-    expect(resolveDevelopmentNarrationSessionRoutingMode("")).toBeUndefined();
-    expect(resolveDevelopmentNarrationSessionRoutingMode("kokoro")).toBeUndefined();
-  });
-
-  it("does not create a manifest session adapter without a selected mode", () => {
-    expect(
-      createNarrationPreparationAdapterForMode(undefined, fakeNarrationRepository())
-    ).toBeNull();
+    expect(resolveDevelopmentNarrationSessionRoutingMode("")).toBe("hybrid-v1");
+    expect(resolveDevelopmentNarrationSessionRoutingMode("kokoro")).toBe("hybrid-v1");
   });
 
   it("uses the native manifest adapter for hybrid mode inside Tauri", () => {

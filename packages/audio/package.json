@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./compatibility": "./src/narration-compatibility-api.ts",
+    "./narration": "./src/narration-api.ts",
+    "./testing": "./src/narration-fakes.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

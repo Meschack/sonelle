@@ -4,28 +4,45 @@ import { CloseIcon, HeadphonesIcon } from "./reader-icons";
 
 interface NarrationToastProps {
   message: string;
-  onDismiss: () => void;
+  tone?: "error" | "warning" | "pending";
+  onDismiss?: () => void;
 }
 
 export function NarrationToast(props: NarrationToastProps) {
+  const tone = () => props.tone ?? "error";
+  const title = () => {
+    if (tone() === "pending") return "Preparing narration";
+    if (tone() === "warning") return "Narration warning";
+    return "Narration needs attention";
+  };
+
   return (
     <section class="reader-toast-region" aria-label="Notifications">
-      <div class="reader-toast" role="status" aria-live="polite" aria-atomic="true">
+      <div
+        classList={{ "reader-toast": true, [tone()]: true }}
+        role={tone() === "error" ? "alert" : "status"}
+        aria-live={tone() === "error" ? "assertive" : "polite"}
+        aria-atomic="true"
+      >
         <span class="reader-toast-icon" aria-hidden="true">
-          <HeadphonesIcon />
+          <Show when={tone() === "pending"} fallback={<HeadphonesIcon />}>
+            <span class="reader-toast-spinner" />
+          </Show>
         </span>
         <div class="reader-toast-copy">
-          <strong>Narration needs attention</strong>
+          <strong>{title()}</strong>
           <p>{props.message}</p>
         </div>
-        <button
-          class="reader-toast-close"
-          type="button"
-          aria-label="Close notification"
-          onClick={props.onDismiss}
-        >
-          <CloseIcon />
-        </button>
+        <Show when={props.onDismiss != null}>
+          <button
+            class="reader-toast-close"
+            type="button"
+            aria-label="Close notification"
+            onClick={() => props.onDismiss?.()}
+          >
+            <CloseIcon />
+          </button>
+        </Show>
       </div>
     </section>
   );

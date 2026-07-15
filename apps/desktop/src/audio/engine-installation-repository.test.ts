@@ -9,6 +9,7 @@ describe("offline narration engine installation", () => {
     expect(failedEngineInstallation("kokoro", "Please retry.")).toEqual({
       engineId: "kokoro",
       status: "failed",
+      modelRevision: "",
       downloadSizeBytes: 0,
       downloadedBytes: 0,
       progress: null,
@@ -29,6 +30,7 @@ describe("offline narration engine installation", () => {
     ).toEqual({
       engineId: "supertonic",
       status: "preparing",
+      modelRevision: "",
       downloadSizeBytes: 398_960_177,
       downloadedBytes: 150_000_000,
       progress: 37,

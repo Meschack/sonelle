@@ -1,22 +1,32 @@
 import { describe, expect, it } from "vitest";
+import * as audioPublicApi from "./index";
 import {
   activateAudioSettingsForLanguage,
+  activateHybridAudioSettingsForLanguage,
   createAudioSettings,
-  createPrefetchingNarrationGateway,
   DEFAULT_AUDIO_SETTINGS,
   DEFAULT_NARRATION_VOICE_ID,
-  FakeNarrationGateway,
-  estimateSentenceDurationSec,
   parseAudioSettings,
   resolveNarrationVoiceForLanguage,
+  hybridNarrationVoicesForLanguage,
   selectNarrationVoicePreference,
-  serializeAudioSettings,
+  serializeAudioSettings
+} from "./index";
+import {
+  createPrefetchingNarrationGateway,
   type NarrationGateway,
   type SentenceNarration,
   type SentenceNarrationRequest
-} from "./index";
+} from "./narration-compatibility-api";
+import { FakeNarrationGateway } from "./narration-fakes";
 
 describe("sentence narration", () => {
+  it("keeps compatibility and session machinery out of the settings entry point", () => {
+    expect(audioPublicApi).not.toHaveProperty("PiperCompatibilityAdapter");
+    expect(audioPublicApi).not.toHaveProperty("createNarrationSession");
+    expect(audioPublicApi).not.toHaveProperty("FakeManifestNarrationPlayer");
+  });
+
   it("keeps fake narration deterministic and cached for tests", async () => {
     const gateway = new FakeNarrationGateway();
     const request = {
@@ -38,10 +48,6 @@ describe("sentence narration", () => {
     });
     expect(second.cached).toBe(true);
     expect(second.sourceUrl).toBe(first.sourceUrl);
-  });
-
-  it("estimates sentence duration without exposing timing internals", () => {
-    expect(estimateSentenceDurationSec("One two three.")).toBeGreaterThan(1);
   });
 
   it("keeps audio settings inside supported playback behavior", () => {
@@ -88,6 +94,36 @@ describe("sentence narration", () => {
     expect(parseAudioSettings('{"schemaVersion":99,"autoAdvance":false}')).toEqual(
       DEFAULT_AUDIO_SETTINGS
     );
+  });
+
+  it("keeps hybrid narration voice choices in audio settings", () => {
+    const settings = createAudioSettings({
+      voiceId: "kokoro:af-heart",
+      voicePreferences: { en: "kokoro:af-heart", fr: "supertonic:F1" }
+    });
+
+    expect(settings.voiceId).toBe("kokoro:af-heart");
+    expect(settings.voicePreferences).toEqual({
+      en: "kokoro:af-heart",
+      fr: "supertonic:F1"
+    });
+  });
+
+  it("keeps hybrid voice choices compatible with the active book", () => {
+    expect(hybridNarrationVoicesForLanguage("en").map((voice) => voice.id)).toEqual([
+      "kokoro:af-heart",
+      "kokoro:bf-emma"
+    ]);
+    expect(hybridNarrationVoicesForLanguage("fr").map((voice) => voice.id)).toEqual([
+      "supertonic:F1",
+      "supertonic:M1"
+    ]);
+    expect(
+      activateHybridAudioSettingsForLanguage(
+        createAudioSettings({ voiceId: "supertonic:M1" }),
+        "en"
+      ).voiceId
+    ).toBe("kokoro:af-heart");
   });
 
   it("matches the persisted voice to the active book language", () => {

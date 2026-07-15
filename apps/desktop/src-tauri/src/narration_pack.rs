@@ -52,6 +52,21 @@ pub trait NarrationPackDownloadClient {
         url: &str,
         on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), String>,
     ) -> Result<(), String>;
+
+    fn stream_range(
+        &self,
+        _url: &str,
+        _start_byte: u64,
+        _on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), String>,
+    ) -> Result<(), NarrationPackDownloadError> {
+        Err(NarrationPackDownloadError::UnsupportedResume)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NarrationPackDownloadError {
+    UnsupportedResume,
+    Failed(String),
 }
 
 pub fn install_narration_pack(
@@ -69,10 +84,6 @@ pub fn install_narration_pack(
     }
 
     let temporary = destination.with_extension("installing");
-    if temporary.exists() {
-        fs::remove_dir_all(&temporary)
-            .map_err(|_| "Sonelle couldn't refresh offline narration files.".to_string())?;
-    }
     fs::create_dir_all(&temporary)
         .map_err(|_| "Sonelle couldn't prepare offline narration files.".to_string())?;
 
@@ -142,28 +153,71 @@ fn download_pack_artifact(
         fs::create_dir_all(parent)
             .map_err(|_| "Sonelle couldn't save offline narration files.".to_string())?;
     }
-    let temporary = destination.with_extension("download");
-    if temporary.exists() {
-        let _ = fs::remove_file(&temporary);
+    if verified_artifact_is_ready(destination, artifact) {
+        on_progress(artifact.size_bytes);
+        return Ok(());
+    }
+    if destination.exists() {
+        fs::remove_file(destination)
+            .map_err(|_| "Sonelle couldn't replace offline narration files.".to_string())?;
     }
 
-    let mut output = File::create(&temporary)
-        .map_err(|_| "Sonelle couldn't save offline narration files.".to_string())?;
-    let mut hasher = Sha256::new();
-    let mut downloaded = 0_u64;
-    let result = client.stream(&artifact.url, &mut |chunk| {
-        output
-            .write_all(chunk)
-            .map_err(|_| "Sonelle couldn't save offline narration files.".to_string())?;
-        hasher.update(chunk);
-        downloaded = downloaded.saturating_add(chunk.len() as u64);
-        on_progress(downloaded);
-        Ok(())
-    });
-    if let Err(error) = result {
-        drop(output);
+    let temporary = destination.with_extension("download");
+    let mut downloaded = temporary
+        .metadata()
+        .ok()
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if downloaded > artifact.size_bytes {
         let _ = fs::remove_file(&temporary);
-        return Err(error);
+        downloaded = 0;
+    }
+
+    let mut hasher = hash_partial_file(&temporary)?;
+    on_progress(downloaded);
+    let mut output = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&temporary)
+        .map_err(|_| "Sonelle couldn't save offline narration files.".to_string())?;
+
+    if downloaded > 0 {
+        match stream_artifact_range(
+            client,
+            artifact,
+            &mut output,
+            &mut hasher,
+            &mut downloaded,
+            on_progress,
+        ) {
+            Ok(()) => {}
+            Err(NarrationPackDownloadError::UnsupportedResume) => {
+                drop(output);
+                let _ = fs::remove_file(&temporary);
+                hasher = Sha256::new();
+                downloaded = 0;
+                output = File::create(&temporary)
+                    .map_err(|_| "Sonelle couldn't save offline narration files.".to_string())?;
+                stream_artifact_from_start(
+                    client,
+                    artifact,
+                    &mut output,
+                    &mut hasher,
+                    &mut downloaded,
+                    on_progress,
+                )?;
+            }
+            Err(NarrationPackDownloadError::Failed(error)) => return Err(error),
+        }
+    } else {
+        stream_artifact_from_start(
+            client,
+            artifact,
+            &mut output,
+            &mut hasher,
+            &mut downloaded,
+            on_progress,
+        )?;
     }
     output
         .flush()
@@ -183,6 +237,77 @@ fn download_pack_artifact(
     }
     fs::rename(&temporary, destination)
         .map_err(|_| "Sonelle couldn't finish offline narration setup.".to_string())
+}
+
+fn stream_artifact_from_start(
+    client: &dyn NarrationPackDownloadClient,
+    artifact: &NarrationPackArtifact,
+    output: &mut File,
+    hasher: &mut Sha256,
+    downloaded: &mut u64,
+    on_progress: &mut dyn FnMut(u64),
+) -> Result<(), String> {
+    client.stream(&artifact.url, &mut |chunk| {
+        write_download_chunk(output, hasher, downloaded, on_progress, chunk)
+    })
+}
+
+fn stream_artifact_range(
+    client: &dyn NarrationPackDownloadClient,
+    artifact: &NarrationPackArtifact,
+    output: &mut File,
+    hasher: &mut Sha256,
+    downloaded: &mut u64,
+    on_progress: &mut dyn FnMut(u64),
+) -> Result<(), NarrationPackDownloadError> {
+    client.stream_range(&artifact.url, *downloaded, &mut |chunk| {
+        write_download_chunk(output, hasher, downloaded, on_progress, chunk)
+    })
+}
+
+fn write_download_chunk(
+    output: &mut File,
+    hasher: &mut Sha256,
+    downloaded: &mut u64,
+    on_progress: &mut dyn FnMut(u64),
+    chunk: &[u8],
+) -> Result<(), String> {
+    output
+        .write_all(chunk)
+        .map_err(|_| "Sonelle couldn't save offline narration files.".to_string())?;
+    hasher.update(chunk);
+    *downloaded = downloaded.saturating_add(chunk.len() as u64);
+    on_progress(*downloaded);
+    Ok(())
+}
+
+fn verified_artifact_is_ready(destination: &Path, artifact: &NarrationPackArtifact) -> bool {
+    destination
+        .metadata()
+        .map(|metadata| metadata.len() == artifact.size_bytes)
+        .unwrap_or(false)
+        && file_sha256(destination).as_deref() == Some(artifact.sha256.as_str())
+}
+
+fn hash_partial_file(path: &Path) -> Result<Sha256, String> {
+    let mut hasher = Sha256::new();
+    if !path.exists() {
+        return Ok(hasher);
+    }
+
+    let mut file = File::open(path)
+        .map_err(|_| "Sonelle couldn't open offline narration files.".to_string())?;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|_| "Sonelle couldn't open offline narration files.".to_string())?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher)
 }
 
 fn write_pack_record(destination: &Path, pack: &NarrationPack) -> Result<(), String> {
@@ -269,7 +394,7 @@ fn finalize_sha256(hasher: Sha256) -> String {
 mod tests {
     use super::{
         install_narration_pack, installed_pack_is_ready, NarrationPack, NarrationPackArtifact,
-        NarrationPackDownloadClient, NarrationPackInstallStatus,
+        NarrationPackDownloadClient, NarrationPackDownloadError, NarrationPackInstallStatus,
     };
     use std::{
         cell::Cell,
@@ -282,6 +407,8 @@ mod tests {
         payload: Vec<u8>,
         failure: Option<String>,
         calls: Cell<u32>,
+        range_calls: Cell<u32>,
+        supports_range: bool,
     }
 
     impl NarrationPackDownloadClient for FakeDownloadClient {
@@ -299,6 +426,33 @@ mod tests {
                 None => Ok(()),
             }
         }
+
+        fn stream_range(
+            &self,
+            _url: &str,
+            start_byte: u64,
+            on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), String>,
+        ) -> Result<(), NarrationPackDownloadError> {
+            self.range_calls.set(self.range_calls.get() + 1);
+            if !self.supports_range {
+                return Err(NarrationPackDownloadError::UnsupportedResume);
+            }
+
+            let start = usize::try_from(start_byte).map_err(|_| {
+                NarrationPackDownloadError::Failed("range start is too large".to_string())
+            })?;
+            let payload = self.payload.get(start..).ok_or_else(|| {
+                NarrationPackDownloadError::Failed("range start is too large".to_string())
+            })?;
+            let split = payload.len().min(2);
+            on_chunk(&payload[..split]).map_err(NarrationPackDownloadError::Failed)?;
+            on_chunk(&payload[split..]).map_err(NarrationPackDownloadError::Failed)?;
+
+            match &self.failure {
+                Some(error) => Err(NarrationPackDownloadError::Failed(error.clone())),
+                None => Ok(()),
+            }
+        }
     }
 
     #[test]
@@ -313,6 +467,8 @@ mod tests {
             payload: b"Sonelle".to_vec(),
             failure: None,
             calls: Cell::new(0),
+            range_calls: Cell::new(0),
+            supports_range: true,
         };
         let mut progress = Vec::new();
 
@@ -346,6 +502,8 @@ mod tests {
             payload: b"Sonelle".to_vec(),
             failure: None,
             calls: Cell::new(0),
+            range_calls: Cell::new(0),
+            supports_range: true,
         };
 
         install_narration_pack(&root, &pack, &client, &mut |_, _| {}).expect("pack should install");
@@ -362,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn cleans_partial_downloads_after_failure() {
+    fn keeps_partial_downloads_after_failure() {
         let root = test_root("pack-failure");
         let pack = test_pack(
             "rev-a",
@@ -373,13 +531,56 @@ mod tests {
             payload: b"partial".to_vec(),
             failure: Some("connection lost".to_string()),
             calls: Cell::new(0),
+            range_calls: Cell::new(0),
+            supports_range: true,
         };
 
         let error = install_narration_pack(&root, &pack, &client, &mut |_, _| {})
             .expect_err("pack should fail");
 
         assert_eq!(error, "connection lost");
-        assert!(!root.join("kokoro/rev-a.installing/model.download").exists());
+        assert_eq!(
+            fs::read(root.join("kokoro/rev-a.installing/model.download"))
+                .expect("partial download should remain"),
+            b"partial"
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn resumes_partial_downloads_when_the_source_supports_ranges() {
+        let root = test_root("pack-resume");
+        let pack = test_pack(
+            "rev-a",
+            "8328d302e64b688068affcad021367dad44992236ca84add38713735f9a9a1f0",
+            7,
+        );
+        let first_client = FakeDownloadClient {
+            payload: b"Son".to_vec(),
+            failure: Some("connection lost".to_string()),
+            calls: Cell::new(0),
+            range_calls: Cell::new(0),
+            supports_range: true,
+        };
+        install_narration_pack(&root, &pack, &first_client, &mut |_, _| {})
+            .expect_err("first install should fail");
+
+        let second_client = FakeDownloadClient {
+            payload: b"Sonelle".to_vec(),
+            failure: None,
+            calls: Cell::new(0),
+            range_calls: Cell::new(0),
+            supports_range: true,
+        };
+        install_narration_pack(&root, &pack, &second_client, &mut |_, _| {})
+            .expect("second install should resume");
+
+        assert_eq!(second_client.calls.get(), 0);
+        assert_eq!(second_client.range_calls.get(), 1);
+        assert!(installed_pack_is_ready(
+            &root.join("kokoro").join("rev-a"),
+            &pack
+        ));
         fs::remove_dir_all(root).ok();
     }
 
@@ -396,6 +597,8 @@ mod tests {
             payload: b"Sonelle".to_vec(),
             failure: None,
             calls: Cell::new(0),
+            range_calls: Cell::new(0),
+            supports_range: true,
         };
 
         assert!(install_narration_pack(&root, &pack, &client, &mut |_, _| {}).is_err());

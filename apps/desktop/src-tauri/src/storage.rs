@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, fs, path::PathBuf};
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -11,8 +7,8 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
 use crate::{
-    epub_import::{read_epub_language, ImportedBook, ImportedCover},
-    text::{segment_normalized_paragraphs, segment_paragraphs},
+    epub_import::ImportedCover,
+    library_import::{PreparedBookImport, PreparedParagraphImport},
 };
 
 mod event_journal;
@@ -25,6 +21,64 @@ pub use model::*;
 pub struct SonelleStore {
     db_path: PathBuf,
     covers_dir: PathBuf,
+}
+
+pub(crate) enum LegacyLibraryRepairEvent<'a> {
+    Started {
+        batch_size: usize,
+    },
+    Progressed {
+        examined_count: usize,
+        repaired_count: usize,
+        failed_count: usize,
+    },
+    Completed {
+        examined_count: usize,
+        repaired_count: usize,
+        failed_count: usize,
+    },
+    Failed {
+        reason: &'a str,
+    },
+}
+
+struct StagedCover {
+    temporary_path: PathBuf,
+    final_path: PathBuf,
+    promoted_new_file: bool,
+    committed: bool,
+}
+
+impl StagedCover {
+    fn source_path(&self) -> String {
+        self.final_path.to_string_lossy().into_owned()
+    }
+
+    fn promote(&mut self) -> Result<(), String> {
+        if self.final_path.exists() {
+            fs::remove_file(&self.temporary_path)
+                .map_err(|_| "We couldn't finish saving that book cover.".to_string())?;
+            return Ok(());
+        }
+
+        fs::rename(&self.temporary_path, &self.final_path)
+            .map_err(|_| "We couldn't finish saving that book cover.".to_string())?;
+        self.promoted_new_file = true;
+        Ok(())
+    }
+
+    fn mark_committed(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for StagedCover {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.temporary_path);
+        if self.promoted_new_file && !self.committed {
+            let _ = fs::remove_file(&self.final_path);
+        }
+    }
 }
 
 impl SonelleStore {
@@ -56,7 +110,7 @@ impl SonelleStore {
     }
 
     #[cfg(test)]
-    fn open_at(db_path: PathBuf) -> Result<Self, String> {
+    pub(crate) fn open_at(db_path: PathBuf) -> Result<Self, String> {
         let covers_dir = db_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
@@ -69,19 +123,24 @@ impl SonelleStore {
         Ok(store)
     }
 
-    pub fn save_imported_book(&self, book: ImportedBook) -> Result<ReaderDocumentView, String> {
+    pub fn save_imported_book(
+        &self,
+        book: impl Into<PreparedBookImport>,
+    ) -> Result<ReaderDocumentView, String> {
+        let book = book.into();
         let mut connection = self.connect()?;
         let imported_at = now();
-        let replaced_existing = connection
+        let previous_cover_path = connection
             .query_row(
-                "SELECT 1 FROM books WHERE id = ?1",
+                "SELECT cover_image_src FROM books WHERE id = ?1",
                 params![book.id],
-                |_| Ok(()),
+                |row| row.get::<_, Option<String>>(0),
             )
             .optional()
-            .map_err(|_| "We couldn't inspect the local library.".to_string())?
-            .is_some();
-        let cover_image_src = self.persist_cover(&book.id, book.cover_image.as_ref())?;
+            .map_err(|_| "We couldn't inspect the local library.".to_string())?;
+        let replaced_existing = previous_cover_path.is_some();
+        let mut staged_cover = self.stage_cover(&book.id, book.cover_image.as_ref())?;
+        let cover_image_src = staged_cover.as_ref().map(StagedCover::source_path);
         let transaction = connection
             .transaction()
             .map_err(|_| "We couldn't save that book.".to_string())?;
@@ -150,11 +209,7 @@ impl SonelleStore {
             let mut total_sentence_count = 0_i64;
             for chapter in &book.chapters {
                 let normalized_body = chapter.body.clone();
-                let paragraph_sentences = segment_normalized_paragraphs(&normalized_body);
-                let chapter_sentence_count = paragraph_sentences
-                    .iter()
-                    .map(|sentences| sentences.len() as i64)
-                    .sum::<i64>();
+                let chapter_sentence_count = chapter.sentences.len() as i64;
                 total_sentence_count += chapter_sentence_count;
 
                 insert_chapter
@@ -168,40 +223,29 @@ impl SonelleStore {
                     ])
                     .map_err(|_| "We couldn't save a chapter from that book.".to_string())?;
 
-                let mut sentence_index = 0_i64;
-                for (paragraph_index, sentences) in paragraph_sentences.iter().enumerate() {
-                    let paragraph_start = sentence_index;
+                for sentence in &chapter.sentences {
+                    insert_sentence
+                        .execute(params![
+                            sentence.id,
+                            book.id,
+                            chapter.id,
+                            sentence.index as i64,
+                            sentence.text
+                        ])
+                        .map_err(|_| "We couldn't save a sentence from that book.".to_string())?;
+                }
 
-                    for sentence in sentences {
-                        insert_sentence
-                            .execute(params![
-                                format!("{}:sentence-{}", chapter.id, sentence_index + 1),
-                                book.id,
-                                chapter.id,
-                                sentence_index,
-                                sentence
-                            ])
-                            .map_err(|_| {
-                                "We couldn't save a sentence from that book.".to_string()
-                            })?;
-                        sentence_index += 1;
-                    }
-
-                    let sentence_count = sentence_index - paragraph_start;
-                    if sentence_count > 0 {
-                        insert_paragraph
-                            .execute(params![
-                                format!("{}:paragraph-{}", chapter.id, paragraph_index + 1),
-                                book.id,
-                                chapter.id,
-                                paragraph_index as i64,
-                                paragraph_start,
-                                sentence_count
-                            ])
-                            .map_err(|_| {
-                                "We couldn't save a paragraph from that book.".to_string()
-                            })?;
-                    }
+                for paragraph in &chapter.paragraphs {
+                    insert_paragraph
+                        .execute(params![
+                            paragraph.id,
+                            book.id,
+                            chapter.id,
+                            paragraph.index as i64,
+                            paragraph.start_sentence_index as i64,
+                            paragraph.sentence_count as i64
+                        ])
+                        .map_err(|_| "We couldn't save a paragraph from that book.".to_string())?;
                 }
             }
 
@@ -230,6 +274,25 @@ impl SonelleStore {
 
         insert_event(
             &transaction,
+            "BookTextExtracted",
+            json!({
+                "bookId": book.id,
+                "chapterCount": book.chapters.len()
+            }),
+        )?;
+        for chapter in &book.chapters {
+            insert_event(
+                &transaction,
+                "ChapterSegmented",
+                json!({
+                    "bookId": book.id,
+                    "chapterId": chapter.id,
+                    "sentenceCount": chapter.sentences.len()
+                }),
+            )?;
+        }
+        insert_event(
+            &transaction,
             "BookImported",
             json!({
                 "bookId": book.id,
@@ -239,9 +302,20 @@ impl SonelleStore {
             }),
         )?;
 
+        if let Some(cover) = &mut staged_cover {
+            cover.promote()?;
+        }
         transaction
             .commit()
             .map_err(|_| "We couldn't finish saving that book.".to_string())?;
+        if let Some(cover) = &mut staged_cover {
+            cover.mark_committed();
+        }
+        if let Some(previous_cover_path) = previous_cover_path.flatten() {
+            if Some(previous_cover_path.as_str()) != cover_image_src.as_deref() {
+                let _ = fs::remove_file(previous_cover_path);
+            }
+        }
         self.open_book(&book.id, Some(&first_chapter.id))
     }
 
@@ -340,9 +414,12 @@ impl SonelleStore {
         &self,
         position: SaveReadingPositionRequest,
     ) -> Result<(), String> {
-        let connection = self.connect()?;
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| "We couldn't prepare your reading-place update.".to_string())?;
         let updated_at = now();
-        connection
+        transaction
             .execute(
                 "INSERT INTO reading_positions (book_id, chapter_id, sentence_index, updated_at)
                  VALUES (?1, ?2, ?3, ?4)
@@ -360,14 +437,188 @@ impl SonelleStore {
             .map_err(|_| "We couldn't save your reading place.".to_string())?;
 
         insert_event(
-            &connection,
+            &transaction,
             "PlaybackPositionChanged",
             json!({
                 "bookId": position.book_id,
                 "chapterId": position.chapter_id,
                 "sentenceIndex": position.sentence_index
             }),
-        )
+        )?;
+
+        transaction
+            .commit()
+            .map_err(|_| "We couldn't finish saving your reading place.".to_string())
+    }
+
+    pub fn legacy_books_missing_language(
+        &self,
+        after_book_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<LegacyBookLanguageSource>, String> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, source_path
+                 FROM books
+                 WHERE (language IS NULL OR TRIM(language) = '')
+                   AND (?1 IS NULL OR id > ?1)
+                 ORDER BY id ASC
+                 LIMIT ?2",
+            )
+            .map_err(|_| "We couldn't inspect the local library.".to_string())?;
+        let sources = statement
+            .query_map(params![after_book_id, limit as i64], |row| {
+                Ok(LegacyBookLanguageSource {
+                    book_id: row.get(0)?,
+                    source_path: row.get(1)?,
+                })
+            })
+            .map_err(|_| "We couldn't inspect the local library.".to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "We couldn't inspect the local library.".to_string())?;
+        Ok(sources)
+    }
+
+    pub fn save_book_language(&self, book_id: &str, language: &str) -> Result<(), String> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| "We couldn't prepare that book update.".to_string())?;
+        transaction
+            .execute(
+                "UPDATE books SET language = ?1 WHERE id = ?2",
+                params![language, book_id],
+            )
+            .map_err(|_| "We couldn't update that book.".to_string())?;
+        insert_event(
+            &transaction,
+            "BookLanguageRecovered",
+            json!({ "bookId": book_id, "language": language }),
+        )?;
+        transaction
+            .commit()
+            .map_err(|_| "We couldn't finish updating that book.".to_string())
+    }
+
+    pub fn legacy_chapters_missing_paragraphs(
+        &self,
+        after_chapter_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<LegacyChapterText>, String> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT chapters.book_id, chapters.id, chapters.body, chapters.sentence_count
+                 FROM chapters
+                 WHERE chapters.sentence_count > 0
+                   AND NOT EXISTS (
+                     SELECT 1 FROM paragraphs WHERE paragraphs.chapter_id = chapters.id
+                   )
+                   AND (?1 IS NULL OR chapters.id > ?1)
+                 ORDER BY chapters.id ASC
+                 LIMIT ?2",
+            )
+            .map_err(|_| "We couldn't inspect the local library.".to_string())?;
+        let chapters = statement
+            .query_map(params![after_chapter_id, limit as i64], |row| {
+                Ok(LegacyChapterText {
+                    book_id: row.get(0)?,
+                    chapter_id: row.get(1)?,
+                    body: row.get(2)?,
+                    sentence_count: row.get::<_, i64>(3)?.max(0) as usize,
+                })
+            })
+            .map_err(|_| "We couldn't inspect the local library.".to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "We couldn't inspect the local library.".to_string())?;
+        Ok(chapters)
+    }
+
+    pub(crate) fn record_legacy_library_repair_event(
+        &self,
+        event: LegacyLibraryRepairEvent<'_>,
+    ) -> Result<(), String> {
+        let connection = self.connect()?;
+        let (name, payload) = match event {
+            LegacyLibraryRepairEvent::Started { batch_size } => (
+                "LegacyLibraryRepairStarted",
+                json!({ "batchSize": batch_size }),
+            ),
+            LegacyLibraryRepairEvent::Progressed {
+                examined_count,
+                repaired_count,
+                failed_count,
+            } => (
+                "LegacyLibraryRepairProgressed",
+                json!({
+                    "examinedCount": examined_count,
+                    "repairedCount": repaired_count,
+                    "failedCount": failed_count
+                }),
+            ),
+            LegacyLibraryRepairEvent::Completed {
+                examined_count,
+                repaired_count,
+                failed_count,
+            } => (
+                "LegacyLibraryRepairCompleted",
+                json!({
+                    "examinedCount": examined_count,
+                    "repairedCount": repaired_count,
+                    "failedCount": failed_count
+                }),
+            ),
+            LegacyLibraryRepairEvent::Failed { reason } => {
+                ("LegacyLibraryRepairFailed", json!({ "reason": reason }))
+            }
+        };
+        insert_event(&connection, name, payload)
+    }
+
+    pub fn save_recovered_paragraphs(
+        &self,
+        book_id: &str,
+        chapter_id: &str,
+        paragraphs: &[PreparedParagraphImport],
+    ) -> Result<(), String> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| "We couldn't prepare the library update.".to_string())?;
+        {
+            let mut insert = transaction
+                .prepare(
+                    "INSERT INTO paragraphs (
+                       id, book_id, chapter_id, position, start_sentence_index, sentence_count
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .map_err(|_| "We couldn't update that chapter.".to_string())?;
+            for paragraph in paragraphs {
+                insert
+                    .execute(params![
+                        paragraph.id,
+                        book_id,
+                        chapter_id,
+                        paragraph.index as i64,
+                        paragraph.start_sentence_index as i64,
+                        paragraph.sentence_count as i64
+                    ])
+                    .map_err(|_| "We couldn't update that chapter.".to_string())?;
+            }
+        }
+        insert_event(
+            &transaction,
+            "ChapterParagraphsRecovered",
+            json!({
+                "bookId": book_id,
+                "chapterId": chapter_id,
+                "paragraphCount": paragraphs.len()
+            }),
+        )?;
+        transaction
+            .commit()
+            .map_err(|_| "We couldn't finish updating that chapter.".to_string())
     }
 
     pub fn list_bookmarks(&self, book_id: Option<&str>) -> Result<Vec<BookmarkView>, String> {
@@ -434,13 +685,16 @@ impl SonelleStore {
     }
 
     pub fn save_bookmark(&self, bookmark: SaveBookmarkRequest) -> Result<BookmarkView, String> {
-        let connection = self.connect()?;
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| "We couldn't prepare that bookmark update.".to_string())?;
         let id = bookmark_id(
             &bookmark.book_id,
             &bookmark.chapter_id,
             &bookmark.sentence_id,
         );
-        let created_at = connection
+        let created_at = transaction
             .query_row(
                 "SELECT created_at FROM bookmarks WHERE id = ?1",
                 params![id],
@@ -450,7 +704,7 @@ impl SonelleStore {
             .map_err(|_| "We couldn't save that bookmark.".to_string())?
             .unwrap_or_else(now);
 
-        connection
+        transaction
             .execute(
                 "INSERT INTO bookmarks (
                     id,
@@ -481,7 +735,7 @@ impl SonelleStore {
             .map_err(|_| "We couldn't save that bookmark.".to_string())?;
 
         insert_event(
-            &connection,
+            &transaction,
             "BookmarkCreated",
             json!({
                 "bookmarkId": id,
@@ -492,7 +746,11 @@ impl SonelleStore {
             }),
         )?;
 
-        self.read_bookmark_by_id(&connection, &id)
+        let saved = self.read_bookmark_by_id(&transaction, &id)?;
+        transaction
+            .commit()
+            .map_err(|_| "We couldn't finish saving that bookmark.".to_string())?;
+        Ok(saved)
     }
 
     pub fn delete_bookmark(&self, bookmark_id: &str) -> Result<(), String> {
@@ -767,39 +1025,24 @@ impl SonelleStore {
     }
 
     fn read_book(&self, connection: &Connection, book_id: &str) -> Result<ReaderBookView, String> {
-        let (mut book, source_path) = connection
+        connection
             .query_row(
-                "SELECT id, title, author, language, cover_image_src, source_path
+                "SELECT id, title, author, language, cover_image_src
                  FROM books WHERE id = ?1",
                 params![book_id],
                 |row| {
-                    Ok((
-                        ReaderBookView {
-                            id: row.get(0)?,
-                            title: row.get(1)?,
-                            author: row.get(2)?,
-                            language: row.get(3)?,
-                            cover_image_src: row.get(4)?,
-                        },
-                        row.get::<_, String>(5)?,
-                    ))
+                    Ok(ReaderBookView {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        author: row.get(2)?,
+                        language: row.get(3)?,
+                        cover_image_src: row.get(4)?,
+                    })
                 },
             )
             .optional()
             .map_err(|_| "We couldn't open that book.".to_string())?
-            .ok_or_else(|| "We couldn't find that book in your library.".to_string())?;
-
-        if book.language.is_none() {
-            if let Some(language) = read_epub_language(Path::new(&source_path)) {
-                let _ = connection.execute(
-                    "UPDATE books SET language = ?1 WHERE id = ?2",
-                    params![&language, &book.id],
-                );
-                book.language = Some(language);
-            }
-        }
-
-        Ok(book)
+            .ok_or_else(|| "We couldn't find that book in your library.".to_string())
     }
 
     fn read_position(
@@ -918,12 +1161,7 @@ impl SonelleStore {
         connection: &Connection,
         chapter_id: &str,
     ) -> Result<Vec<ReaderParagraphView>, String> {
-        let persisted = self.read_persisted_paragraphs_for_chapter(connection, chapter_id)?;
-        if !persisted.is_empty() {
-            return Ok(persisted);
-        }
-
-        self.read_paragraphs_from_chapter_body(connection, chapter_id)
+        self.read_persisted_paragraphs_for_chapter(connection, chapter_id)
     }
 
     fn read_persisted_paragraphs_for_chapter(
@@ -953,40 +1191,6 @@ impl SonelleStore {
             .map_err(|_| "We couldn't read that chapter.".to_string())?;
 
         Ok(paragraphs)
-    }
-
-    fn read_paragraphs_from_chapter_body(
-        &self,
-        connection: &Connection,
-        chapter_id: &str,
-    ) -> Result<Vec<ReaderParagraphView>, String> {
-        let body = connection
-            .query_row(
-                "SELECT body FROM chapters WHERE id = ?1",
-                params![chapter_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|_| "We couldn't read that chapter.".to_string())?
-            .unwrap_or_default();
-        let mut sentence_index = 0_i64;
-
-        Ok(segment_paragraphs(&body)
-            .into_iter()
-            .enumerate()
-            .map(|(paragraph_index, sentences)| {
-                let start_sentence_index = sentence_index;
-                let sentence_count = sentences.len() as i64;
-                sentence_index += sentence_count;
-
-                ReaderParagraphView {
-                    id: format!("{chapter_id}:paragraph-{}", paragraph_index + 1),
-                    index: paragraph_index as i64,
-                    start_sentence_index,
-                    sentence_count,
-                }
-            })
-            .collect())
     }
 
     fn read_sentences_for_book(
@@ -1154,27 +1358,39 @@ impl SonelleStore {
         Ok(results)
     }
 
-    fn persist_cover(
+    fn stage_cover(
         &self,
         book_id: &str,
         cover: Option<&ImportedCover>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<StagedCover>, String> {
         let Some(cover) = cover else {
             return Ok(None);
         };
 
         fs::create_dir_all(&self.covers_dir)
             .map_err(|_| "We couldn't save that book cover.".to_string())?;
-        let digest = Sha256::digest(book_id.as_bytes());
-        let path = self.covers_dir.join(format!(
+        let mut digest = Sha256::new();
+        digest.update(book_id.as_bytes());
+        digest.update(&cover.bytes);
+        let digest = digest.finalize();
+        let final_path = self.covers_dir.join(format!(
             "cover-{}.{}",
             hex_prefix(&digest, 24),
             cover_file_extension(&cover.media_type)
         ));
-        fs::write(&path, &cover.bytes)
+        let temporary_path = final_path.with_extension(format!(
+            "{}.importing",
+            cover_file_extension(&cover.media_type)
+        ));
+        fs::write(&temporary_path, &cover.bytes)
             .map_err(|_| "We couldn't save that book cover.".to_string())?;
 
-        Ok(Some(path.to_string_lossy().into_owned()))
+        Ok(Some(StagedCover {
+            temporary_path,
+            final_path,
+            promoted_new_file: false,
+            committed: false,
+        }))
     }
 
     fn connect(&self) -> Result<Connection, String> {

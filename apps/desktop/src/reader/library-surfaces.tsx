@@ -4,9 +4,9 @@ import {
   type LibraryBookFilter,
   type LibraryBookListState
 } from "@sonelle/library";
-import type { LibrarySearchResultDto } from "../library/book-repository";
+import type { LibrarySearchResultDto } from "../library/library-contracts";
 import { BookCover } from "./book-cover";
-import type { LibraryBookSummary } from "./reader-document";
+import type { LibraryBookSummary } from "../library/library-models";
 import type { AppView, InspectorTab } from "./reader-experience-types";
 import { libraryProgressPercent } from "./reader-formatting";
 import { isBookRailMode, type LibraryRailMode } from "./library-rail-state";

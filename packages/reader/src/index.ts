@@ -21,7 +21,14 @@ export interface ReaderPreferences {
   toolTab: ReaderToolTab;
   libraryFilter: ReaderLibraryFilterPreference;
   contentFontSize: number;
+  contentFontFamily: string | null;
+  uiFontFamily: string | null;
 }
+
+export type ReaderTypographyPreferences = Pick<
+  ReaderPreferences,
+  "contentFontSize" | "contentFontFamily" | "uiFontFamily"
+>;
 
 export interface SearchableSentence {
   id: string;
@@ -106,7 +113,9 @@ export function createPlaybackState(): ReaderPlaybackState {
 export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   toolTab: "word",
   libraryFilter: "all",
-  contentFontSize: 16
+  contentFontSize: 16,
+  contentFontFamily: null,
+  uiFontFamily: null
 };
 
 export function createReaderPreferences(input: Partial<ReaderPreferences> = {}): ReaderPreferences {
@@ -117,7 +126,9 @@ export function createReaderPreferences(input: Partial<ReaderPreferences> = {}):
       : DEFAULT_READER_PREFERENCES.libraryFilter,
     contentFontSize: clampContentFontSize(
       input.contentFontSize ?? DEFAULT_READER_PREFERENCES.contentFontSize
-    )
+    ),
+    contentFontFamily: normalizeFontFamily(input.contentFontFamily),
+    uiFontFamily: normalizeFontFamily(input.uiFontFamily)
   };
 }
 
@@ -133,6 +144,17 @@ export function parseReaderPreferences(value: string | null): ReaderPreferences 
   } catch {
     return DEFAULT_READER_PREFERENCES;
   }
+}
+
+export function readerTypographyPreferences(
+  preferences: ReaderPreferences
+): ReaderTypographyPreferences {
+  const normalized = createReaderPreferences(preferences);
+  return {
+    contentFontSize: normalized.contentFontSize,
+    contentFontFamily: normalized.contentFontFamily,
+    uiFontFamily: normalized.uiFontFamily
+  };
 }
 
 export function playPlayback(
@@ -449,6 +471,19 @@ function isReaderLibraryFilter(value: unknown): value is ReaderLibraryFilterPref
 function clampContentFontSize(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_READER_PREFERENCES.contentFontSize;
   return Math.min(24, Math.max(14, Math.round(value)));
+}
+
+function normalizeFontFamily(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const family = value.trim();
+  if (
+    family.length === 0 ||
+    family.length > 160 ||
+    [...family].some((character) => /[\u0000-\u001f\u007f]/u.test(character))
+  ) {
+    return null;
+  }
+  return family;
 }
 
 function createSearchExcerpt(text: string, normalizedQuery: string): string {

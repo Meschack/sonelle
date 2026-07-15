@@ -1,18 +1,22 @@
+import { createDomainEventDispatcher, type DomainEventDispatcher } from "@sonelle/domain";
 import {
-  createDomainEventDispatcher,
-  type AnyDomainEvent,
-  type DomainEventDispatcher
-} from "@sonelle/domain";
+  activateAudioSettingsForLanguage,
+  activateHybridAudioSettingsForLanguage,
+  hybridNarrationVoicesForLanguage,
+  SUPPORTED_NARRATION_VOICES,
+  type AudioSettings,
+  type NarrationVoice
+} from "@sonelle/audio";
 import {
   createNarrationSession as createManifestNarrationSession,
-  createPrefetchingNarrationGateway,
-  FakePassageNarrationAdapter,
-  PiperCompatibilityAdapter,
   type NarrationRoutingMode,
-  type NarrationSession,
-  type NarrationPreparationAdapter,
+  type NarrationPreparationAdapter
+} from "@sonelle/audio/narration";
+import {
+  createPrefetchingNarrationGateway,
+  PiperCompatibilityAdapter,
   type PrefetchingNarrationGateway
-} from "@sonelle/audio";
+} from "@sonelle/audio/compatibility";
 import type { EventSink } from "@sonelle/storage";
 import {
   createAudioCacheRepository,
@@ -22,11 +26,13 @@ import {
   createAudioSettingsRepository,
   type AudioSettingsRepository
 } from "../audio/audio-settings-repository";
-import { createHtmlAudioPlayer, type HtmlAudioPlayer } from "../audio/html-audio-player";
+import { createHtmlAudioPlayer } from "../audio/html-audio-player";
 import { createHtmlManifestNarrationPlayer } from "../audio/html-manifest-narration-player";
 import {
   createEngineInstallationRepository,
-  type EngineInstallationRepository
+  type EngineInstallationRepository,
+  type EngineInstallationState,
+  type NarrationEngineId
 } from "../audio/engine-installation-repository";
 import { createNativeManifestNarrationAdapter } from "../audio/native-manifest-narration-adapter";
 import { createNarrationRepository } from "../audio/narration-repository";
@@ -39,31 +45,65 @@ import {
   type DictionaryRepository
 } from "../learning/dictionary-repository";
 import {
-  createBookRepository,
-  listenForBookDrops,
-  type BookDropEvent,
-  type BookRepository
-} from "../library/book-repository";
+  type BookCatalog,
+  type BookDropAdapter,
+  type BookExporter,
+  type BookImporter,
+  type BookmarkStore,
+  type LibrarySearch,
+  type ReadingPositionStore
+} from "../library/library-contracts";
+import { createBookCatalog } from "../library/book-catalog";
+import { createBookDropAdapter } from "../library/book-drop-adapter";
+import { createBookExporter } from "../library/book-exporter";
+import { createBookImporter } from "../library/book-importer";
+import { createBookmarkStore } from "../library/bookmark-store";
+import { createLibrarySearch } from "../library/library-search";
+import { createReadingPositionStore } from "../library/reading-position-store";
+import { isTauriRuntime } from "../platform/tauri-runtime";
+import { createDomainEventSink } from "../platform/domain-event-sink";
+import { createSystemFontCatalog, type SystemFontCatalog } from "../platform/system-font-catalog";
 import {
   createReaderPreferencesRepository,
   type ReaderPreferencesRepository
 } from "./reader-preferences-repository";
-import { createDomainEventSink } from "./domain-event-sink";
+import {
+  createReaderNarrationWorkflow,
+  type ReaderNarrationWorkflow,
+  type ReaderNarrationWorkflowOptions
+} from "./reader-narration-workflow";
+import { createReaderNarrationPrefetchWorkflow } from "./reader-narration-prefetch-workflow";
+
+export interface ReaderNarrationService {
+  capabilities: {
+    offlineLibrary: "individual-voice" | "language-pack";
+    preparesAcrossChapters: boolean;
+  };
+  activateSettings(settings: AudioSettings, language: string | null): AudioSettings;
+  voices(language: string | null): readonly NarrationVoice[];
+  observeEngineInstallation(installation: EngineInstallationState): void;
+  createWorkflow(
+    options: Omit<ReaderNarrationWorkflowOptions, "engineInstallations">
+  ): ReaderNarrationWorkflow;
+}
 
 export interface ReaderExperienceDependencies {
   audioCacheRepository: AudioCacheRepository;
   audioSettingsRepository: AudioSettingsRepository;
-  bookRepository: BookRepository;
+  bookCatalog: BookCatalog;
+  bookDropAdapter: BookDropAdapter;
+  bookExporter: BookExporter;
+  bookImporter: BookImporter;
+  bookmarkStore: BookmarkStore;
   dictionaryRepository: DictionaryRepository;
   engineInstallationRepository: EngineInstallationRepository;
   eventDispatcher: DomainEventDispatcher;
   eventSink: EventSink;
-  htmlAudioPlayer: HtmlAudioPlayer;
-  listenForBookDrops(onEvent: (event: BookDropEvent) => void): Promise<() => void>;
-  narrationSessionFactory?: (onEvent: (event: AnyDomainEvent) => void) => NarrationSession;
-  narrationSessionRoutingMode?: NarrationRoutingMode;
-  narrationRepository: PrefetchingNarrationGateway;
+  fontCatalog: SystemFontCatalog;
+  librarySearch: LibrarySearch;
+  narration: ReaderNarrationService;
   readerPreferencesRepository: ReaderPreferencesRepository;
+  readingPositionStore: ReadingPositionStore;
   voiceInstallationRepository: VoiceInstallationRepository;
 }
 
@@ -78,59 +118,115 @@ export function createReaderExperienceDependencies(): ReaderExperienceDependenci
     narrationSessionRoutingMode,
     narrationRepository
   );
+  const bookCatalog = createBookCatalog();
+  const eventSink = createDomainEventSink();
+  const usesLanguagePacks = narrationSessionRoutingMode === "hybrid-v1";
+  const engineInstallations: Partial<Record<NarrationEngineId, EngineInstallationState>> = {};
 
   return {
     audioCacheRepository: createAudioCacheRepository(),
     audioSettingsRepository: createAudioSettingsRepository(),
-    bookRepository: createBookRepository(),
+    bookCatalog,
+    bookDropAdapter: createBookDropAdapter(),
+    bookExporter: createBookExporter(),
+    bookImporter: createBookImporter(),
+    bookmarkStore: createBookmarkStore(),
     dictionaryRepository: createDictionaryRepository(),
     engineInstallationRepository: createEngineInstallationRepository(),
     eventDispatcher,
-    eventSink: createDomainEventSink(),
-    htmlAudioPlayer,
-    listenForBookDrops,
-    narrationRepository,
-    narrationSessionFactory:
-      narrationPreparationAdapter == null
-        ? undefined
-        : (onEvent) =>
-            createManifestNarrationSession({
-              adapter: narrationPreparationAdapter,
-              player: createHtmlManifestNarrationPlayer(htmlAudioPlayer),
-              onEvent
-            }),
-    narrationSessionRoutingMode,
+    eventSink,
+    fontCatalog: createSystemFontCatalog(),
+    librarySearch: createLibrarySearch(),
+    narration: {
+      capabilities: {
+        offlineLibrary: usesLanguagePacks ? "language-pack" : "individual-voice",
+        preparesAcrossChapters: usesLanguagePacks
+      },
+      activateSettings(settings, language) {
+        return usesLanguagePacks
+          ? activateHybridAudioSettingsForLanguage(settings, language)
+          : activateAudioSettingsForLanguage(settings, language);
+      },
+      voices(language) {
+        return usesLanguagePacks
+          ? availableHybridNarrationVoicesForLanguage(language, engineInstallations)
+          : SUPPORTED_NARRATION_VOICES;
+      },
+      observeEngineInstallation(installation) {
+        engineInstallations[installation.engineId] = installation;
+      },
+      createWorkflow(options) {
+        const session = createManifestNarrationSession({
+          adapter: narrationPreparationAdapter,
+          player: createHtmlManifestNarrationPlayer(htmlAudioPlayer),
+          eventDispatcher,
+          onEventError: reportEventFailure,
+          onError: (error) => options.reportError(error, "playback", "unknown")
+        });
+        const prefetchWorkflow = createReaderNarrationPrefetchWorkflow({
+          adapter: narrationPreparationAdapter,
+          eventDispatcher,
+          eventSink,
+          repository: bookCatalog,
+          routingMode: narrationSessionRoutingMode,
+          engineInstallations: () => engineInstallations
+        });
+        return createReaderNarrationWorkflow(
+          {
+            eventDispatcher,
+            eventSink,
+            prefetchWorkflow,
+            routingMode: narrationSessionRoutingMode,
+            session
+          },
+          { ...options, engineInstallations: () => engineInstallations }
+        );
+      }
+    },
     readerPreferencesRepository: createReaderPreferencesRepository(),
+    readingPositionStore: createReadingPositionStore(),
     voiceInstallationRepository: createVoiceInstallationRepository()
   };
 }
 
-export function resolveDevelopmentNarrationSessionRoutingMode(
-  mode: unknown
-): NarrationRoutingMode | undefined {
-  return mode === "legacy-piper" || mode === "hybrid-v1" ? mode : undefined;
+export function availableHybridNarrationVoicesForLanguage(
+  language: string | null,
+  installations: Partial<Record<NarrationEngineId, EngineInstallationState>>
+): readonly NarrationVoice[] {
+  const voices = hybridNarrationVoicesForLanguage(language);
+  const engineId = voices[0]?.id.split(":", 1)[0] as NarrationEngineId | undefined;
+  return engineId != null && installations[engineId]?.status === "ready" ? voices : [];
+}
+
+export function resolveDevelopmentNarrationSessionRoutingMode(mode: unknown): NarrationRoutingMode {
+  return mode === "legacy-piper" ? mode : "hybrid-v1";
 }
 
 export function createNarrationPreparationAdapterForMode(
-  routingMode: NarrationRoutingMode | undefined,
+  routingMode: NarrationRoutingMode,
   narrationRepository: PrefetchingNarrationGateway,
   options: {
     nativeRuntime?: boolean;
     createNativeAdapter?: () => NarrationPreparationAdapter;
     createBrowserFallbackAdapter?: () => NarrationPreparationAdapter;
   } = {}
-): NarrationPreparationAdapter | null {
+): NarrationPreparationAdapter {
   if (routingMode === "legacy-piper") return new PiperCompatibilityAdapter(narrationRepository);
   if (routingMode === "hybrid-v1") {
     const nativeRuntime = options.nativeRuntime ?? isTauriRuntime();
     if (nativeRuntime)
       return (options.createNativeAdapter ?? createNativeManifestNarrationAdapter)();
-    return (options.createBrowserFallbackAdapter ?? (() => new FakePassageNarrationAdapter()))();
+    return options.createBrowserFallbackAdapter?.() ?? unavailableNarrationPreparationAdapter;
   }
-
-  return null;
+  return unavailableNarrationPreparationAdapter;
 }
 
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const unavailableNarrationPreparationAdapter: NarrationPreparationAdapter = {
+  async prepare() {
+    throw new Error("Narration is available in the desktop app.");
+  }
+};
+
+function reportEventFailure(error: unknown) {
+  if (import.meta.env.DEV) console.error("[sonelle][events] Narration reaction failed.", error);
 }

@@ -136,19 +136,21 @@ export function setupKokoroReference(options = {}) {
   }
 
   if (options.writeLocalEngineCatalog) {
-    writeLocalKokoroEngineCatalog({ configPath: options.configPath });
+    writeLocalNarrationEngineCatalog({ configPath: options.configPath });
   }
 
   return { sourceDir, venvDir };
 }
 
-export function writeLocalKokoroEngineCatalog(options = {}) {
+export function writeLocalNarrationEngineCatalog(options = {}) {
   const config = loadNarrationSpikeConfig(options.configPath);
   const workspace = resolve(repoRoot, config.workspace);
   const kokoro = config.engines.find((engine) => engine.id === "kokoro");
+  const supertonic = config.engines.find((engine) => engine.id === "supertonic");
   if (kokoro == null) throw new Error("The narration spike does not define Kokoro.");
+  if (supertonic == null) throw new Error("The narration spike does not define Supertonic.");
 
-  const artifacts = [
+  const kokoroArtifacts = [
     localArtifact(
       "kokoro.onnx",
       "assets/kokoro.onnx",
@@ -170,36 +172,58 @@ export function writeLocalKokoroEngineCatalog(options = {}) {
       join(workspace, "sources", "kokoro", "kokoro.js", "voices", "bf_emma.bin")
     )
   ];
-  const revision = createHash("sha256")
-    .update(artifacts.map((artifact) => artifact.sha256).join(""))
-    .digest("hex")
-    .slice(0, 40);
+  const supertonicArtifacts = supertonic.model.artifacts.map((artifact) =>
+    localArtifact(
+      artifact.remotePath,
+      artifact.targetPath,
+      join(workspace, "sources", "supertonic", artifact.targetPath)
+    )
+  );
+  const kokoroRevision = localRevision(kokoroArtifacts);
+  const supertonicRevision = localRevision(supertonicArtifacts);
   const outputPath = options.outputPath ?? join(workspace, "local-engine-catalog.json");
   const localKokoro = {
     id: "kokoro",
     source: kokoro.source,
     model: {
       repository: "local/sonelle-kokoro-runtime",
-      revision,
-      artifacts
+      revision: kokoroRevision,
+      artifacts: kokoroArtifacts
+    }
+  };
+  const localSupertonic = {
+    id: "supertonic",
+    source: supertonic.source,
+    model: {
+      repository: "local/sonelle-supertonic-runtime",
+      revision: supertonicRevision,
+      artifacts: supertonicArtifacts
     }
   };
   const output = {
     schemaVersion: 1,
     workspace: config.workspace,
-    engines: config.engines.map((engine) => (engine.id === "kokoro" ? localKokoro : engine))
+    engines: config.engines.map((engine) => {
+      if (engine.id === "kokoro") return localKokoro;
+      if (engine.id === "supertonic") return localSupertonic;
+      return engine;
+    })
   };
 
   mkdirSync(dirname(outputPath), { recursive: true });
   writeFileSync(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
-  console.log(`\nLocal Kokoro engine catalog: ${outputPath}`);
+  console.log(`\nLocal narration engine catalog: ${outputPath}`);
   console.log("Use SONELLE_NARRATION_ENGINE_CATALOG to point the desktop app at this file.");
-  return { outputPath, revision, artifacts };
+  return {
+    outputPath,
+    revisions: { kokoro: kokoroRevision, supertonic: supertonicRevision },
+    artifacts: { kokoro: kokoroArtifacts, supertonic: supertonicArtifacts }
+  };
 }
 
 function localArtifact(remotePath, targetPath, path) {
   if (!existsSync(path)) {
-    throw new Error(`Kokoro runtime artifact is missing: ${path}`);
+    throw new Error(`Narration runtime artifact is missing: ${path}`);
   }
   return {
     remotePath,
@@ -208,6 +232,13 @@ function localArtifact(remotePath, targetPath, path) {
     sha256: sha256(path),
     url: pathToFileURL(path).href
   };
+}
+
+function localRevision(artifacts) {
+  return createHash("sha256")
+    .update(artifacts.map((artifact) => artifact.sha256).join(""))
+    .digest("hex")
+    .slice(0, 40);
 }
 
 function sha256(path) {
@@ -236,7 +267,7 @@ if (process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]
   const writeLocalEngineCatalog = process.argv.includes("--local-engine-catalog");
 
   if (writeLocalEngineCatalog && !exportOnnx && !runCorpus && !writeNativeFixture) {
-    writeLocalKokoroEngineCatalog();
+    writeLocalNarrationEngineCatalog();
   } else {
     setupKokoroReference({
       exportOnnx,

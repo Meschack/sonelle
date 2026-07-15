@@ -1,6 +1,6 @@
 import { createSentenceId, normalizeReaderSearchText } from "@sonelle/reader";
 import { segmentParagraphs, segmentSentences } from "@sonelle/text";
-import type { ReaderDocumentDto } from "./reader-document";
+import type { ReaderDocumentDto } from "../library/library-models";
 import { fixtureBook, type FixtureBook } from "./fixture-book";
 
 export interface ReaderSentenceView {

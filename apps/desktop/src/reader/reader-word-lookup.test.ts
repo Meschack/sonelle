@@ -17,6 +17,7 @@ describe("reader word lookup workflow", () => {
         bookId: "book-1",
         chapterId: "chapter-2",
         sentenceId: "sentence-3",
+        tokenIndex: 0,
         surface: "bonjour",
         language: "fr"
       }),
@@ -33,6 +34,7 @@ describe("reader word lookup workflow", () => {
         bookId: "book-1",
         chapterId: "chapter-2",
         sentenceId: "sentence-3",
+        tokenIndex: 0,
         surface: "bonjour",
         language: "fr"
       }),

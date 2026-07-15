@@ -31,26 +31,16 @@ export function createReaderVoiceInstallationWorkflow(
 
   const handleRequested = async (event: DomainEvent<"VoiceInstallationRequested">) => {
     const { voiceId } = event.payload;
-    if (isSelected(voiceId)) {
-      dependencies.projectInstallation(preparingVoiceInstallation(voiceId));
-      dependencies.projectNotice(null);
-    }
-
-    let installation: VoiceInstallationState;
     try {
-      installation = await dependencies.repository.install(voiceId);
+      await dependencies.repository.install(voiceId);
     } catch (error) {
       const reason = dependencies.friendlyError(error);
-      if (isSelected(voiceId)) {
-        dependencies.projectInstallation(failedVoiceInstallation(voiceId, reason));
-      }
       await dependencies.eventDispatcher.dispatch(
         createDomainEvent("VoiceInstallationFailed", { voiceId, reason })
       );
       return;
     }
 
-    if (isSelected(voiceId)) dependencies.projectInstallation(installation);
     await dependencies.eventDispatcher.dispatch(
       createDomainEvent("VoiceInstallationReady", { voiceId })
     );
@@ -84,26 +74,49 @@ export function createReaderVoiceInstallationWorkflow(
         dependencies.eventDispatcher.subscribe("VoiceInstallationRequested", (event) =>
           dependencies.eventSink.append(event)
         ),
+        dependencies.eventDispatcher.subscribe("VoiceInstallationRequested", (event) => {
+          if (!isSelected(event.payload.voiceId)) return;
+          dependencies.projectInstallation(preparingVoiceInstallation(event.payload.voiceId));
+          dependencies.projectNotice(null);
+        }),
         dependencies.eventDispatcher.subscribe("VoiceInstallationRequested", handleRequested),
+        dependencies.eventDispatcher.subscribe("VoiceInstallationProgressed", (event) => {
+          if (isSelected(event.payload.voiceId)) {
+            dependencies.projectInstallation(event.payload);
+          }
+        }),
         dependencies.eventDispatcher.subscribe("VoiceInstallationReady", (event) =>
           dependencies.eventSink.append(event)
         ),
-        dependencies.eventDispatcher.subscribe("VoiceInstallationReady", () => {
+        dependencies.eventDispatcher.subscribe("VoiceInstallationReady", (event) => {
           dependencies.projectNotice(null);
+          return dependencies.repository.getStatus(event.payload.voiceId).then((installation) => {
+            if (isSelected(event.payload.voiceId)) dependencies.projectInstallation(installation);
+          });
         }),
         dependencies.eventDispatcher.subscribe("VoiceInstallationFailed", (event) =>
           dependencies.eventSink.append(event)
         ),
         dependencies.eventDispatcher.subscribe("VoiceInstallationFailed", (event) => {
+          if (isSelected(event.payload.voiceId)) {
+            dependencies.projectInstallation(
+              failedVoiceInstallation(event.payload.voiceId, event.payload.reason)
+            );
+          }
           dependencies.projectNotice(event.payload.reason);
         })
       ];
       let unlisten: () => void;
       try {
         unlisten = await dependencies.repository.listen((installation) => {
-          if (isSelected(installation.voiceId)) {
-            dependencies.projectInstallation(installation);
-          }
+          void dependencies.eventDispatcher
+            .dispatch(
+              createDomainEvent("VoiceInstallationProgressed", {
+                ...installation,
+                status: installation.status === "ready" ? "ready" : "preparing"
+              })
+            )
+            .catch(reportReactionFailure);
         });
       } catch (error) {
         subscriptions.forEach((unsubscribe) => unsubscribe());

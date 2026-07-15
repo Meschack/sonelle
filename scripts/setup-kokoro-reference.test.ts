@@ -9,7 +9,7 @@ import {
   pythonPackageVersionCheckScript,
   resolvePythonCommand,
   resolveVenvPythonPath,
-  writeLocalKokoroEngineCatalog
+  writeLocalNarrationEngineCatalog
 } from "./setup-kokoro-reference.mjs";
 
 const temporaryDirectories: string[] = [];
@@ -44,7 +44,7 @@ describe("Kokoro reference environment", () => {
     expect(KOKORO_ENGLISH_MODEL).toMatch(/#sha256=[a-f0-9]{64}$/u);
   });
 
-  it("writes a local engine catalog for the native Kokoro runtime", () => {
+  it("writes a local engine catalog for both native narration runtimes", () => {
     const root = mkdtempSync(join(tmpdir(), "sonelle-kokoro-catalog-"));
     temporaryDirectories.push(root);
     const workspace = join(root, "workspace");
@@ -115,13 +115,20 @@ describe("Kokoro reference environment", () => {
       "emma",
       "utf8"
     );
+    mkdirSync(join(workspace, "sources", "supertonic", "assets"), { recursive: true });
+    writeFileSync(
+      join(workspace, "sources", "supertonic", "assets", "config.json"),
+      "supertonic-config",
+      "utf8"
+    );
 
-    const { outputPath, revision } = writeLocalKokoroEngineCatalog({
+    const { outputPath, revisions } = writeLocalNarrationEngineCatalog({
       configPath: join(root, "engines.json")
     });
     const catalog = JSON.parse(readFileSync(outputPath, "utf8"));
 
-    expect(revision).toMatch(/^[a-f0-9]{40}$/u);
+    expect(revisions.kokoro).toMatch(/^[a-f0-9]{40}$/u);
+    expect(revisions.supertonic).toMatch(/^[a-f0-9]{40}$/u);
     expect(catalog.engines).toHaveLength(2);
     expect(
       catalog.engines[0].model.artifacts.map(
@@ -137,6 +144,9 @@ describe("Kokoro reference environment", () => {
       pathToFileURL(join(workspace, "kokoro-onnx", "kokoro.onnx")).href
     );
     expect(catalog.engines[1].id).toBe("supertonic");
-    expect(catalog.engines[1].model.repository).toBe("Supertone/supertonic-3");
+    expect(catalog.engines[1].model.repository).toBe("local/sonelle-supertonic-runtime");
+    expect(catalog.engines[1].model.artifacts[0].url).toBe(
+      pathToFileURL(join(workspace, "sources", "supertonic", "assets", "config.json")).href
+    );
   });
 });

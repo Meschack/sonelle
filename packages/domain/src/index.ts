@@ -1,8 +1,18 @@
 export type EntityId = string;
 export type IsoDateTime = string;
 
+export interface NarrationSettingsSnapshot {
+  playbackRate: number;
+  volume: number;
+  autoAdvance: boolean;
+  voiceId: string;
+  voicePreferences: Readonly<Record<string, string>>;
+}
+
 export interface DomainEventPayloadMap {
   BookImportRequested: { path: string | null };
+  BookImportCancelled: { path: string | null };
+  BookImportFailed: { path: string | null; reason: string };
   BookImported: {
     bookId: EntityId;
     title: string;
@@ -11,9 +21,26 @@ export interface DomainEventPayloadMap {
   };
   BookTextExtracted: { bookId: EntityId; chapterCount: number };
   ChapterSegmented: { bookId: EntityId; chapterId: EntityId; sentenceCount: number };
-  AudioPreparationRequested: SentenceRef & { voiceId: string };
-  SentenceAudioReady: SentenceRef & { voiceId: string; source: "cache" | "prepared" };
-  AudioPreparationFailed: SentenceRef & { voiceId: string; reason: string };
+  ChapterParagraphsRecovered: {
+    bookId: EntityId;
+    chapterId: EntityId;
+    paragraphCount: number;
+  };
+  BookLanguageRecovered: { bookId: EntityId; language: string };
+  LegacyLibraryRepairStarted: { batchSize: number };
+  LegacyLibraryRepairProgressed: {
+    examinedCount: number;
+    repairedCount: number;
+    failedCount: number;
+  };
+  LegacyLibraryRepairCompleted: {
+    examinedCount: number;
+    repairedCount: number;
+    failedCount: number;
+  };
+  LegacyLibraryRepairFailed: { reason: string };
+  NarrationPlaybackRequested: SentenceRef & { voiceId: string };
+  NarrationPreparationStarted: SentenceRef & { passageId: EntityId };
   PassageNarrationReady: {
     bookId: EntityId;
     chapterId: EntityId;
@@ -25,6 +52,12 @@ export interface DomainEventPayloadMap {
     source: "cache" | "prepared";
   };
   NarrationSentenceEntered: SentenceRef & { passageId: EntityId };
+  PassageNarrationPlaybackEnded: {
+    bookId: EntityId;
+    chapterId: EntityId;
+    passageId: EntityId;
+    lastSentenceId: EntityId;
+  };
   NarrationPlaybackPaused: SentenceRef & { passageId: EntityId };
   NarrationPlaybackEnded: {
     bookId: EntityId;
@@ -33,22 +66,89 @@ export interface DomainEventPayloadMap {
     lastSentenceId: EntityId;
   };
   NarrationPlaybackFailed: SentenceRef & { passageId: EntityId | null; reason: string };
+  NarrationResetRequested: { bookId: EntityId; chapterId: EntityId };
+  NarrationSettingsChanged: {
+    previousVoiceId: string;
+    source: "book" | "user";
+    settings: NarrationSettingsSnapshot;
+  };
+  UpcomingNarrationPreparationRequested: {
+    bookId: EntityId;
+    chapterId: EntityId;
+    nextChapterId: EntityId;
+    voiceId: string;
+  };
+  UpcomingNarrationPreparationReady: {
+    bookId: EntityId;
+    chapterId: EntityId;
+    nextChapterId: EntityId;
+    voiceId: string;
+  };
+  UpcomingNarrationPreparationFailed: {
+    bookId: EntityId;
+    chapterId: EntityId;
+    nextChapterId: EntityId;
+    voiceId: string;
+    reason: string;
+  };
   VoiceInstallationRequested: { voiceId: string };
+  VoiceInstallationProgressed: {
+    voiceId: string;
+    status: "preparing" | "ready";
+    downloadSizeBytes: number;
+    downloadedBytes: number;
+    progress: number | null;
+    message: string;
+  };
   VoiceInstallationReady: { voiceId: string };
   VoiceInstallationFailed: { voiceId: string; reason: string };
   OfflineNarrationFilesInstallationRequested: { engineId: string };
+  OfflineNarrationFilesInstallationProgressed: {
+    engineId: string;
+    status: "preparing" | "ready";
+    modelRevision: string;
+    downloadSizeBytes: number;
+    downloadedBytes: number;
+    progress: number | null;
+    message: string;
+  };
   OfflineNarrationFilesInstallationReady: { engineId: string };
   OfflineNarrationFilesInstallationFailed: { engineId: string; reason: string };
+  PreparedNarrationClearingRequested: { bookId: EntityId };
+  PreparedNarrationCleared: { bookId: EntityId; sentenceCount: number; sizeBytes: number };
+  PreparedNarrationClearingFailed: { bookId: EntityId; reason: string };
   PlaybackPositionChanged: {
     bookId: EntityId;
     chapterId: EntityId;
     sentenceIndex: number;
   };
+  ReaderOpened: {
+    bookId: EntityId;
+    chapterId: EntityId;
+    sentenceId: EntityId;
+    sentenceIndex: number;
+    playbackStatus: "idle" | "playing" | "paused" | "ended";
+    source: "library" | "sample";
+  };
   ReaderClosed: SentenceRef;
-  WordInspected: SentenceRef & { surface: string; language: string | null };
+  ReaderTypographyChanged: {
+    contentFontSize: number;
+    contentFontFamily: string | null;
+    uiFontFamily: string | null;
+  };
+  WordInspected: SentenceRef & { surface: string; language: string | null; tokenIndex: number };
+  WordLookupStarted: { lookupId: EntityId; surface: string };
+  WordLookupCompleted: {
+    lookupId: EntityId;
+    surface: string;
+    status: "ready" | "not-found" | "error";
+  };
+  WordSaved: { surface: string };
+  WordForgotten: { surface: string };
   BookmarkCreated: SentenceRef & { bookmarkId: EntityId; sentenceIndex: number };
   BookmarkDeleted: { bookmarkId: EntityId; bookId: EntityId };
   BookExportRequested: { bookId: EntityId };
+  BookExportFailed: { bookId: EntityId; reason: string };
   BookExported: {
     bookId: EntityId;
     exportedAt: IsoDateTime;
@@ -58,6 +158,20 @@ export interface DomainEventPayloadMap {
 }
 
 export type DomainEventName = keyof DomainEventPayloadMap;
+
+export const TRANSIENT_DOMAIN_EVENT_NAMES = [
+  "NarrationSettingsChanged",
+  "VoiceInstallationProgressed",
+  "OfflineNarrationFilesInstallationProgressed"
+] as const satisfies readonly DomainEventName[];
+
+export type TransientDomainEventName = (typeof TRANSIENT_DOMAIN_EVENT_NAMES)[number];
+
+export function isTransientDomainEventName(
+  name: DomainEventName
+): name is TransientDomainEventName {
+  return TRANSIENT_DOMAIN_EVENT_NAMES.includes(name as TransientDomainEventName);
+}
 
 export interface DomainEvent<TName extends DomainEventName = DomainEventName> {
   id: EntityId;

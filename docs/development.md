@@ -29,7 +29,6 @@ sudo apt install libdbus-1-dev libglib2.0-dev libgtk-3-dev pkg-config
 
 ```bash
 pnpm install
-pnpm setup:piper
 pnpm dev:desktop
 pnpm dev:web
 pnpm dev:stop
@@ -42,6 +41,7 @@ pnpm check:native
 pnpm qa:real-books
 pnpm perf:large-books
 cargo check
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 ## TUI
@@ -86,6 +86,7 @@ Current verified commands:
 - `pnpm check:native`
 - `cargo fmt --check`
 - `cargo check`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
 
 Current blocked commands:
 
@@ -129,71 +130,43 @@ Use the same EPUB override format as real-book QA:
 SONELLE_QA_EPUBS="/path/book-one.epub;/path/book-two.epub" pnpm perf:large-books
 ```
 
-## Local Narration Voice
+## Local Narration Providers
 
-Sonelle uses Piper for local neural narration during desktop development.
+The primary narration path uses Kokoro for English books and Supertonic for other supported
+languages. The app downloads verified offline narration files and then works without a network
+connection. Piper remains available only through the explicit `legacy-piper` compatibility mode.
 
-Install the supported development voices with:
-
-```bash
-pnpm setup:piper
-```
-
-This creates a local `.sonelle/` sandbox containing:
-
-- `piper-venv`: a Python virtual environment with Piper installed
-- `voices/piper`: downloaded Piper voice files
-- `piper-smoke-*.wav`: short generated samples proving each voice works
-
-The default in-app voice is `en_US-amy-medium` (American English). By default,
-`pnpm setup:piper` installs every voice exposed by the app: American and British English voices plus
-the French voice. The catalog in `packages/audio/src/narration-voices.json` is the source of truth
-for both the setup script and the native fallback.
-
-To install only a specific voice while debugging, pass it when running setup:
+To prepare the pinned real-provider fixtures used by native development and release-candidate QA:
 
 ```bash
-SONELLE_PIPER_VOICE=en_GB-alba-medium pnpm setup:piper
+pnpm spike:narration:models
+node scripts/setup-kokoro-reference.mjs --export-onnx --native-fixture --local-engine-catalog
+pnpm qa:narration-providers
 ```
 
-Advanced overrides:
-
-- `SONELLE_PIPER_BIN`: exact Piper executable
-- `SONELLE_PIPER_PYTHON`: exact Python executable with the Piper module installed
-- `SONELLE_PIPER_MODEL`: exact `.onnx` model path with a matching `.onnx.json` beside it; this overrides the in-app voice selection
-- `SONELLE_PIPER_DATA_DIR`: directory containing downloaded Piper voices
-- `SONELLE_PIPER_VOICE`: voice to install through `pnpm setup:piper`, and a native fallback for older requests without an explicit in-app voice
-- `SONELLE_PIPER_VOICES`: comma, semicolon, or space separated list of voices to install through `pnpm setup:piper`
-- `SONELLE_MSVC_RUNTIME_DIR`: Windows directory containing app-local Visual C++ runtime DLLs when Visual Studio discovery is unavailable
-
-If no neural local voice is available, Sonelle shows a friendly needs-attention state instead of playing robotic system speech.
-
-## Local Kokoro Engine Catalog
-
-During the Kokoro/Supertonic migration, hosted Kokoro runtime artifacts are not available yet. To
-exercise the real desktop pack installer and native Kokoro renderer against local spike artifacts:
+The generated `.sonelle/narration-spike/local-engine-catalog.json` points both engine packs at local
+`file://` artifacts while preserving the same size, SHA-256, revision, and installed-pack checks used
+by hosted files. Start the desktop app against it with:
 
 ```bash
-pnpm spike:narration:setup -- --engine=kokoro
-pnpm spike:narration:models -- --engine=kokoro
-pnpm spike:narration:kokoro-export
-pnpm spike:narration:kokoro-local-catalog
-SONELLE_NARRATION_ENGINE_CATALOG=.sonelle/narration-spike/local-engine-catalog.json pnpm dev
+SONELLE_NARRATION_ENGINE_CATALOG=.sonelle/narration-spike/local-engine-catalog.json pnpm dev:desktop
 ```
 
-The generated catalog points the installer at local `file://` artifacts while keeping the same
-SHA-256 verification and installed-pack layout used by hosted narration files. Production builds
-still need a hosted, pinned Kokoro runtime pack before the hybrid route can ship.
+Provider smoke tests run sequentially with one ONNX thread per provider. They cover direct Kokoro
+rendering, Kokoro manifest alignment, direct Supertonic rendering, and install-then-render for both
+packs. Optional Piper setup remains available with `pnpm setup:piper` when explicitly testing the
+compatibility adapter.
 
 ## CI and Releases
 
 GitHub Actions runs two workflows:
 
-- `CI`: verifies formatting, TypeScript, tests, frontend build, native Rust checks, and a Linux desktop bundle.
-- `Release`: runs after a successful `main` CI build and publishes GitHub Releases for Linux, macOS, and Windows.
+- `CI`: verifies formatting, TypeScript, tests, frontend build, strict native linting/tests, and a Linux desktop bundle.
+- `Release Candidate`: runs after successful `dev` CI, executes real-provider smoke tests, and then builds platform candidates from that exact verified revision.
+- `Release`: runs only after successful `main` CI and publishes GitHub Releases for Linux, macOS Apple Silicon, and Windows.
 
 The release workflow uses `scripts/prepare-release-version.mjs` to compute the next patch version from existing `v*` tags. The computed version is applied to the package, Tauri, and Cargo manifests inside the workflow workspace before `tauri-apps/tauri-action` builds release bundles.
 
 Release versions are not committed back to `main`; the immutable GitHub tag and release represent the shipped build. To intentionally move to a new base version, update the manifest versions in source and let the next release start from that value.
 
-Manual release runs are available from the GitHub Actions `Release` workflow.
+Release and candidate workflows do not accept unverified manual dispatches.

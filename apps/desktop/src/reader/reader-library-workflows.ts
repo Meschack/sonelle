@@ -1,53 +1,82 @@
-import { createDomainEvent, type DomainEventDispatcher } from "@sonelle/domain";
-import type { BookRepository, SaveBookmarkInput } from "../library/book-repository";
+import { createDomainEvent, type DomainEvent, type DomainEventDispatcher } from "@sonelle/domain";
+import type { EventSink } from "@sonelle/storage";
+import type {
+  BookCatalog,
+  BookImporter,
+  BookmarkStore,
+  SaveBookmarkInput
+} from "../library/library-contracts";
 
 export interface ReaderLibraryWorkflowDependencies {
   eventDispatcher: DomainEventDispatcher;
-  repository: Pick<
-    BookRepository,
-    "deleteBookmark" | "importBookFromDialog" | "importBookFromPath" | "saveBookmark"
-  >;
+  eventSink: EventSink;
+  catalog: Pick<BookCatalog, "list">;
+  importer: BookImporter;
+  bookmarks: Pick<BookmarkStore, "delete" | "save">;
+  friendlyError(error: unknown): string;
+  onEventError?(error: unknown): void;
 }
 
 export interface ReaderLibraryWorkflows {
-  importFromDialog(existingBookIds: ReadonlySet<string>): Promise<boolean>;
-  importFromPath(path: string, existingBookIds: ReadonlySet<string>): Promise<void>;
+  importFromDialog(): Promise<void>;
+  importFromPath(path: string): Promise<void>;
   saveBookmark(input: SaveBookmarkInput): Promise<void>;
   deleteBookmark(bookmarkId: string, bookId: string): Promise<void>;
+  start(): () => void;
 }
 
 export function createReaderLibraryWorkflows(
   dependencies: ReaderLibraryWorkflowDependencies
 ): ReaderLibraryWorkflows {
-  const dispatchImportedBook = async (
-    document: Awaited<ReturnType<BookRepository["importBookFromPath"]>>,
-    existingBookIds: ReadonlySet<string>
-  ) => {
-    await dependencies.eventDispatcher.dispatch(
-      createDomainEvent("BookImported", {
-        bookId: document.book.id,
-        title: document.book.title,
-        chapterCount: document.chapters.length,
-        replacedExisting: existingBookIds.has(document.book.id)
-      })
-    );
+  const publish = async (event: Parameters<DomainEventDispatcher["dispatch"]>[0]) => {
+    try {
+      await dependencies.eventDispatcher.dispatch(event);
+    } catch (error) {
+      reportEventErrorSafely(dependencies.onEventError, error);
+    }
+  };
+
+  const handleImportRequested = async (event: DomainEvent<"BookImportRequested">) => {
+    const { path } = event.payload;
+    try {
+      const existingBookIds = new Set((await dependencies.catalog.list()).map((book) => book.id));
+      const document =
+        path == null
+          ? await dependencies.importer.importFromDialog()
+          : await dependencies.importer.importFromPath(path);
+      if (document == null) {
+        await publish(createDomainEvent("BookImportCancelled", { path }));
+        return;
+      }
+
+      await publish(
+        createDomainEvent("BookImported", {
+          bookId: document.book.id,
+          title: document.book.title,
+          chapterCount: document.chapters.length,
+          replacedExisting: existingBookIds.has(document.book.id)
+        })
+      );
+    } catch (error) {
+      await publish(
+        createDomainEvent("BookImportFailed", {
+          path,
+          reason: dependencies.friendlyError(error)
+        })
+      );
+    }
   };
 
   return {
-    async importFromDialog(existingBookIds) {
-      const document = await dependencies.repository.importBookFromDialog();
-      if (document == null) return false;
-
-      await dispatchImportedBook(document, existingBookIds);
-      return true;
+    async importFromDialog() {
+      await publish(createDomainEvent("BookImportRequested", { path: null }));
     },
-    async importFromPath(path, existingBookIds) {
-      const document = await dependencies.repository.importBookFromPath(path);
-      await dispatchImportedBook(document, existingBookIds);
+    async importFromPath(path) {
+      await publish(createDomainEvent("BookImportRequested", { path }));
     },
     async saveBookmark(input) {
-      const bookmark = await dependencies.repository.saveBookmark(input);
-      await dependencies.eventDispatcher.dispatch(
+      const bookmark = await dependencies.bookmarks.save(input);
+      await publish(
         createDomainEvent("BookmarkCreated", {
           bookmarkId: bookmark.id,
           bookId: bookmark.bookId,
@@ -58,10 +87,31 @@ export function createReaderLibraryWorkflows(
       );
     },
     async deleteBookmark(bookmarkId, bookId) {
-      await dependencies.repository.deleteBookmark(bookmarkId);
-      await dependencies.eventDispatcher.dispatch(
-        createDomainEvent("BookmarkDeleted", { bookmarkId, bookId })
-      );
+      await dependencies.bookmarks.delete(bookmarkId);
+      await publish(createDomainEvent("BookmarkDeleted", { bookmarkId, bookId }));
+    },
+    start() {
+      const subscriptions = [
+        dependencies.eventDispatcher.subscribe("BookImportRequested", (event) =>
+          dependencies.eventSink.append(event)
+        ),
+        dependencies.eventDispatcher.subscribe("BookImportRequested", handleImportRequested),
+        dependencies.eventDispatcher.subscribe("BookImportCancelled", (event) =>
+          dependencies.eventSink.append(event)
+        ),
+        dependencies.eventDispatcher.subscribe("BookImportFailed", (event) =>
+          dependencies.eventSink.append(event)
+        )
+      ];
+      return () => subscriptions.forEach((unsubscribe) => unsubscribe());
     }
   };
+}
+
+function reportEventErrorSafely(reporter: ((error: unknown) => void) | undefined, error: unknown) {
+  try {
+    reporter?.(error);
+  } catch {
+    // Development diagnostics must not alter library behavior.
+  }
 }

@@ -6,7 +6,6 @@ Thanks for helping with Sonelle.
 
 ```bash
 pnpm install
-pnpm setup:piper
 pnpm dev:desktop
 ```
 
@@ -18,6 +17,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 cargo check --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 ## Product Rules

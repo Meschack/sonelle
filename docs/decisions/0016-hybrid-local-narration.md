@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Engine selection is approved; the production runtime remains gated by the Phase 0 spike.
+Accepted for the development branch. Release remains gated by real-book listening and resource QA.
 
 ## Context
 
@@ -29,10 +29,14 @@ offline use, or platform independence.
   come from returned sample lengths rather than estimates.
 - Keep playback, highlighting, navigation, bookmarks, and reading progress sentence-oriented.
 - Persist voice preferences per normalized language instead of one global engine-native voice ID.
+- Only present voices supported by the engine selected for the active book.
 - Install shared engine/model packs on demand while presenting voice readiness in reader language.
 - Prefer one native ONNX Runtime integration for both engines, subject to cross-platform spike
   evidence for Kokoro preprocessing, lifecycle, memory, packaging, and licensing.
 - Keep Piper as a compatibility adapter until the complete hybrid path passes release-candidate QA.
+- Treat the native manifest cache as the playback authority: cached narration remains playable without
+  loading an engine, and cache maintenance covers legacy and manifest assets together.
+- Use the pinned engine-pack revision in narration identity so model upgrades cannot reuse stale audio.
 
 The implementation follows the staged migration in
 [`../plans/kokoro-supertonic-narration.md`](../plans/kokoro-supertonic-narration.md).
@@ -43,6 +47,12 @@ Long-running preparation and playback consequences are projected from domain eve
 event names and payloads are introduced with the engine-independent audio contracts, but they must
 represent passage readiness, sentence entry, playback lifecycle, and voice installation without
 exposing inference or cache machinery.
+
+Foreground playback emits `NarrationPreparationStarted` before awaiting audio. The reader projects
+that event into a delayed pending notice and clears it when narration becomes ready, begins playing,
+stops, or fails. The notice is suppressed while a passage is still audible and becomes eligible only
+after `PassageNarrationPlaybackEnded` confirms playback is blocked. Background prefetch does not emit
+the preparation event and remains visually quiet.
 
 ## Consequences
 

@@ -6,6 +6,11 @@ import type {
   NarrationSentenceSpan,
   PreparedNarration
 } from "./narration-contracts";
+import type {
+  NarrationGateway,
+  SentenceNarration,
+  SentenceNarrationRequest
+} from "./legacy-narration";
 import { createNarrationAssetIdentity } from "./narration-identity";
 import { assertPreparedNarration } from "./narration-manifest";
 
@@ -23,6 +28,41 @@ export class FakeSentenceBatchNarrationAdapter implements NarrationPreparationAd
   prepare(request: NarrationPreparationRequest, signal?: AbortSignal): Promise<PreparedNarration> {
     return this.adapter.prepare(request, signal);
   }
+}
+
+export class FakeNarrationGateway implements NarrationGateway {
+  private readonly prepared = new Map<string, SentenceNarration>();
+
+  async prepareSentenceAudio(request: SentenceNarrationRequest): Promise<SentenceNarration> {
+    const key = [
+      request.bookId,
+      request.chapterId,
+      request.sentenceId,
+      request.sentenceIndex,
+      request.voiceId,
+      request.text
+    ].join("\u001f");
+    const existing = this.prepared.get(key);
+    if (existing != null) return { ...existing, cached: true };
+
+    const narration: SentenceNarration = {
+      bookId: request.bookId,
+      chapterId: request.chapterId,
+      sentenceId: request.sentenceId,
+      readiness: "ready",
+      durationSec: 1,
+      sourceUrl: "data:audio/wav;base64,UklGRg==",
+      playbackMode: "html-audio",
+      cached: false,
+      message: null
+    };
+    this.prepared.set(key, narration);
+    return narration;
+  }
+
+  async playPreparedSentenceAudio(): Promise<void> {}
+
+  async stopPreparedSentenceAudio(): Promise<void> {}
 }
 
 class DeterministicNarrationAdapter implements NarrationPreparationAdapter {

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createMemoryEventJournal, type EventSink } from "@sonelle/storage";
+import { isTauriRuntime } from "./tauri-runtime";
 
 export function createDomainEventSink(): EventSink {
   if (!isTauriRuntime()) return createMemoryEventJournal();
@@ -9,8 +10,4 @@ export function createDomainEventSink(): EventSink {
       return invoke<void>("record_domain_event", { event });
     }
   };
-}
-
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }

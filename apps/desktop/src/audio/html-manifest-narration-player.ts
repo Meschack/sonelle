@@ -3,7 +3,7 @@ import type {
   ManifestPlaybackHandlers,
   ManifestPlaybackInput,
   NarrationOutputSettings
-} from "@sonelle/audio";
+} from "@sonelle/audio/narration";
 import type { EntityId } from "@sonelle/domain";
 import type { HtmlAudioPlayer } from "./html-audio-player";
 
@@ -12,6 +12,7 @@ export function createHtmlManifestNarrationPlayer(
 ): ManifestAwareNarrationPlayer {
   let playbackRate = 1;
   let timers: ReturnType<typeof setTimeout>[] = [];
+  let activeTimeline: ActiveSentenceTimeline | null = null;
 
   const clearSentenceTimers = () => {
     for (const timer of timers) clearTimeout(timer);
@@ -35,13 +36,19 @@ export function createHtmlManifestNarrationPlayer(
       if (stopSpan.endSample <= startSpan.startSample)
         throw new Error("Prepared narration has an invalid playback range.");
 
-      scheduleSentenceEntries(
-        playbackSpans(input.narration.sentences, input.startSentenceId, input.stopAfterSentenceId),
-        startSpan.startSample,
-        input.narration.sampleRate,
+      activeTimeline = {
+        spans: playbackSpans(
+          input.narration.sentences,
+          input.startSentenceId,
+          input.stopAfterSentenceId
+        ),
+        sampleRate: input.narration.sampleRate,
+        anchorSample: startSpan.startSample,
+        anchorTimeMs: performance.now(),
         playbackRate,
         handlers
-      );
+      };
+      scheduleSentenceEntries(activeTimeline, true);
 
       try {
         await htmlAudioPlayer.play(input.narration.sourceUrl, {
@@ -50,10 +57,18 @@ export function createHtmlManifestNarrationPlayer(
         });
       } finally {
         clearSentenceTimers();
+        activeTimeline = null;
       }
     },
 
     setOutput(settings: NarrationOutputSettings): void {
+      if (activeTimeline != null) {
+        activeTimeline.anchorSample = currentTimelineSample(activeTimeline);
+        activeTimeline.anchorTimeMs = performance.now();
+        activeTimeline.playbackRate = settings.playbackRate;
+        clearSentenceTimers();
+        scheduleSentenceEntries(activeTimeline, false);
+      }
       playbackRate = settings.playbackRate;
       htmlAudioPlayer.setPlaybackRate(settings.playbackRate);
       htmlAudioPlayer.setVolume(settings.volume);
@@ -61,28 +76,39 @@ export function createHtmlManifestNarrationPlayer(
 
     stop(): void {
       clearSentenceTimers();
+      activeTimeline = null;
       htmlAudioPlayer.stop();
     }
   };
 
-  function scheduleSentenceEntries(
-    spans: readonly { sentenceId: EntityId; startSample: number }[],
-    startSample: number,
-    sampleRate: number,
-    currentPlaybackRate: number,
-    handlers: ManifestPlaybackHandlers
-  ) {
-    const rate = currentPlaybackRate > 0 ? currentPlaybackRate : 1;
-    for (const span of spans) {
-      const delayMs = Math.max(0, ((span.startSample - startSample) / sampleRate / rate) * 1_000);
+  function scheduleSentenceEntries(timeline: ActiveSentenceTimeline, includeAnchor: boolean) {
+    const rate = timeline.playbackRate > 0 ? timeline.playbackRate : 1;
+    for (const span of timeline.spans) {
+      const sampleDelta = span.startSample - timeline.anchorSample;
+      if (sampleDelta < 0 || (!includeAnchor && sampleDelta === 0)) continue;
+      const delayMs = Math.max(0, (sampleDelta / timeline.sampleRate / rate) * 1_000);
       if (delayMs === 0) {
-        handlers.sentenceEntered(span.sentenceId);
+        timeline.handlers.sentenceEntered(span.sentenceId);
         continue;
       }
 
-      timers.push(setTimeout(() => handlers.sentenceEntered(span.sentenceId), delayMs));
+      timers.push(setTimeout(() => timeline.handlers.sentenceEntered(span.sentenceId), delayMs));
     }
   }
+}
+
+interface ActiveSentenceTimeline {
+  spans: readonly { sentenceId: EntityId; startSample: number }[];
+  sampleRate: number;
+  anchorSample: number;
+  anchorTimeMs: number;
+  playbackRate: number;
+  handlers: ManifestPlaybackHandlers;
+}
+
+function currentTimelineSample(timeline: ActiveSentenceTimeline): number {
+  const elapsedSeconds = Math.max(0, performance.now() - timeline.anchorTimeMs) / 1_000;
+  return timeline.anchorSample + elapsedSeconds * timeline.playbackRate * timeline.sampleRate;
 }
 
 function playbackSpans(

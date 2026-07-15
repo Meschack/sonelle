@@ -1,18 +1,14 @@
 import { createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
-import {
-  DEFAULT_AUDIO_SETTINGS,
-  SUPPORTED_NARRATION_VOICES,
-  type AudioSettings
-} from "@sonelle/audio";
+import { type AudioSettings, type NarrationVoice } from "@sonelle/audio";
 import { primaryDefinition, type SavedDictionaryEntry, type WordInsight } from "@sonelle/learning";
 import type { ReaderSearchResult } from "@sonelle/reader";
-import type { AudioCacheStatsDto } from "../audio/audio-cache-repository";
 import type {
-  EngineInstallationState,
-  NarrationEngineId
-} from "../audio/engine-installation-repository";
-import type { VoiceInstallationState } from "../audio/voice-installation-repository";
-import type { LibraryBookmarkDto } from "../library/book-repository";
+  OfflineNarrationProfileId,
+  OfflineNarrationProfileView,
+  OfflineVoiceView,
+  PreparedAudioView
+} from "./reader-offline-narration-application";
+import type { LibraryBookmarkDto } from "../library/library-contracts";
 import { formatBytes } from "./reader-formatting";
 import { DictionaryStatus, StateBlock } from "./reader-feedback";
 import type { InspectorTab } from "./reader-experience-types";
@@ -40,11 +36,15 @@ interface ReaderInspectorProps {
   activeSentence: ReaderSentenceView | null;
   bookmarkNotice: string | null;
   audioSettings: AudioSettings;
-  voiceInstallation: VoiceInstallationState;
-  showOfflineNarrationFiles: boolean;
-  engineInstallations: Record<NarrationEngineId, EngineInstallationState>;
+  voiceInstallation: OfflineVoiceView;
+  offlineLibrary: "individual-voice" | "language-pack";
+  narrationVoices: readonly NarrationVoice[];
+  offlineNarrationProfiles: Record<OfflineNarrationProfileId, OfflineNarrationProfileView>;
   readerContentFontSize: number;
-  audioCacheStats: AudioCacheStatsDto | null;
+  readerContentFontFamily: string | null;
+  uiFontFamily: string | null;
+  systemFontFamilies: readonly string[];
+  audioCacheStats: PreparedAudioView | null;
   audioCacheNotice: string | null;
   exportNotice: string | null;
   onTabChange: (tab: InspectorTab) => void;
@@ -58,10 +58,13 @@ interface ReaderInspectorProps {
   onOpenBookmark: (bookmark: LibraryBookmarkDto) => void;
   onDeleteBookmark: (bookmarkId: string) => void;
   onAudioSettingsChange: (settings: Partial<AudioSettings>) => void;
+  onResetAudioSettings: () => void;
   onInstallVoice: () => void;
-  onInstallEngine: (engineId: NarrationEngineId) => void;
+  onInstallNarrationProfile: (profileId: OfflineNarrationProfileId) => void;
   onRefreshEngines: () => void;
   onReaderContentFontSizeChange: (fontSize: number) => void;
+  onReaderContentFontFamilyChange: (fontFamily: string | null) => void;
+  onUiFontFamilyChange: (fontFamily: string | null) => void;
   onRefreshCache: () => void;
   onClearCache: () => void;
   onExportBook: () => void;
@@ -129,18 +132,24 @@ export function ReaderInspector(props: ReaderInspectorProps) {
           <SettingsPanel
             audioSettings={props.audioSettings}
             voiceInstallation={props.voiceInstallation}
-            showOfflineNarrationFiles={props.showOfflineNarrationFiles}
-            engineInstallations={props.engineInstallations}
+            offlineLibrary={props.offlineLibrary}
+            narrationVoices={props.narrationVoices}
+            offlineNarrationProfiles={props.offlineNarrationProfiles}
             readerContentFontSize={props.readerContentFontSize}
+            readerContentFontFamily={props.readerContentFontFamily}
+            uiFontFamily={props.uiFontFamily}
+            systemFontFamilies={props.systemFontFamilies}
             audioCacheStats={props.audioCacheStats}
             audioCacheNotice={props.audioCacheNotice}
             exportNotice={props.exportNotice}
             onAudioSettingsChange={props.onAudioSettingsChange}
             onInstallVoice={props.onInstallVoice}
-            onInstallEngine={props.onInstallEngine}
+            onInstallNarrationProfile={props.onInstallNarrationProfile}
             onRefreshEngines={props.onRefreshEngines}
             onReaderContentFontSizeChange={props.onReaderContentFontSizeChange}
-            onResetAudioSettings={() => props.onAudioSettingsChange(DEFAULT_AUDIO_SETTINGS)}
+            onReaderContentFontFamilyChange={props.onReaderContentFontFamilyChange}
+            onUiFontFamilyChange={props.onUiFontFamilyChange}
+            onResetAudioSettings={props.onResetAudioSettings}
             onRefreshCache={props.onRefreshCache}
             onClearCache={props.onClearCache}
             onExportBook={props.onExportBook}
@@ -370,18 +379,24 @@ function BookmarkPanel(props: BookmarkPanelProps) {
 
 interface SettingsPanelProps {
   audioSettings: AudioSettings;
-  voiceInstallation: VoiceInstallationState;
-  showOfflineNarrationFiles: boolean;
-  engineInstallations: Record<NarrationEngineId, EngineInstallationState>;
+  voiceInstallation: OfflineVoiceView;
+  offlineLibrary: "individual-voice" | "language-pack";
+  narrationVoices: readonly NarrationVoice[];
+  offlineNarrationProfiles: Record<OfflineNarrationProfileId, OfflineNarrationProfileView>;
   readerContentFontSize: number;
-  audioCacheStats: AudioCacheStatsDto | null;
+  readerContentFontFamily: string | null;
+  uiFontFamily: string | null;
+  systemFontFamilies: readonly string[];
+  audioCacheStats: PreparedAudioView | null;
   audioCacheNotice: string | null;
   exportNotice: string | null;
   onAudioSettingsChange: (settings: Partial<AudioSettings>) => void;
   onInstallVoice: () => void;
-  onInstallEngine: (engineId: NarrationEngineId) => void;
+  onInstallNarrationProfile: (profileId: OfflineNarrationProfileId) => void;
   onRefreshEngines: () => void;
   onReaderContentFontSizeChange: (fontSize: number) => void;
+  onReaderContentFontFamilyChange: (fontFamily: string | null) => void;
+  onUiFontFamilyChange: (fontFamily: string | null) => void;
   onResetAudioSettings: () => void;
   onRefreshCache: () => void;
   onClearCache: () => void;
@@ -417,6 +432,24 @@ function SettingsPanel(props: SettingsPanelProps) {
           <output>{props.readerContentFontSize}px</output>
         </div>
       </div>
+      <FontSelect
+        label="Book font"
+        ariaLabel="Book content font"
+        value={props.readerContentFontFamily}
+        defaultFamily="SpaceMono Nerd Font Propo"
+        usage="Book content"
+        families={props.systemFontFamilies}
+        onChange={props.onReaderContentFontFamilyChange}
+      />
+      <FontSelect
+        label="Interface font"
+        ariaLabel="App interface font"
+        value={props.uiFontFamily}
+        defaultFamily="Satoshi"
+        usage="App interface"
+        families={props.systemFontFamilies}
+        onChange={props.onUiFontFamilyChange}
+      />
       <label class="toggle-row settings-toggle">
         <span>
           <strong>Auto-advance</strong>
@@ -432,24 +465,30 @@ function SettingsPanel(props: SettingsPanelProps) {
       </label>
       <VoiceSelect
         voiceId={props.audioSettings.voiceId}
+        voices={props.narrationVoices}
+        sourceLabel={
+          props.offlineLibrary === "language-pack" ? "Offline narration" : "Local narration"
+        }
         onChange={(voiceId) => props.onAudioSettingsChange({ voiceId })}
       />
-      <VoiceInstallationCard
-        installation={props.voiceInstallation}
-        onInstall={props.onInstallVoice}
-      />
-      <Show when={props.showOfflineNarrationFiles}>
+      <Show when={props.offlineLibrary === "individual-voice"}>
+        <VoiceInstallationCard
+          installation={props.voiceInstallation}
+          onInstall={props.onInstallVoice}
+        />
+      </Show>
+      <Show when={props.offlineLibrary === "language-pack"}>
         <OfflineNarrationFilesPanel
-          installations={props.engineInstallations}
-          onInstall={props.onInstallEngine}
+          profiles={props.offlineNarrationProfiles}
+          onInstall={props.onInstallNarrationProfile}
           onRefresh={props.onRefreshEngines}
         />
       </Show>
       <div class="tool-card">
-        <span class="inspector-section-title">Prepared audio</span>
+        <span class="inspector-section-title">Prepared audio for this book</span>
         <p>
           {props.audioCacheStats == null
-            ? "Checking cache"
+            ? "Checking prepared audio"
             : `${props.audioCacheStats.sentenceCount} sentence${props.audioCacheStats.sentenceCount === 1 ? "" : "s"} · ${formatBytes(props.audioCacheStats.sizeBytes)}`}
         </p>
         <div class="dictionary-actions">
@@ -477,26 +516,9 @@ function SettingsPanel(props: SettingsPanelProps) {
   );
 }
 
-const offlineNarrationProfiles: Array<{
-  engineId: NarrationEngineId;
-  label: string;
-  description: string;
-}> = [
-  {
-    engineId: "kokoro",
-    label: "English narration",
-    description: "Best voice quality for English books"
-  },
-  {
-    engineId: "supertonic",
-    label: "Multilingual narration",
-    description: "Fallback voices for non-English books"
-  }
-];
-
 function OfflineNarrationFilesPanel(props: {
-  installations: Record<NarrationEngineId, EngineInstallationState>;
-  onInstall: (engineId: NarrationEngineId) => void;
+  profiles: Record<OfflineNarrationProfileId, OfflineNarrationProfileView>;
+  onInstall: (profileId: OfflineNarrationProfileId) => void;
   onRefresh: () => void;
 }) {
   return (
@@ -508,13 +530,13 @@ function OfflineNarrationFilesPanel(props: {
         </button>
       </div>
       <div class="offline-narration-file-list">
-        <For each={offlineNarrationProfiles}>
+        <For each={Object.values(props.profiles)}>
           {(profile) => (
             <OfflineNarrationFileCard
-              installation={props.installations[profile.engineId]}
+              installation={profile}
               label={profile.label}
               description={profile.description}
-              onInstall={() => props.onInstall(profile.engineId)}
+              onInstall={() => props.onInstall(profile.id)}
             />
           )}
         </For>
@@ -524,7 +546,7 @@ function OfflineNarrationFilesPanel(props: {
 }
 
 function OfflineNarrationFileCard(props: {
-  installation: EngineInstallationState;
+  installation: OfflineNarrationProfileView;
   label: string;
   description: string;
   onInstall: () => void;
@@ -579,10 +601,7 @@ function OfflineNarrationFileCard(props: {
   );
 }
 
-function VoiceInstallationCard(props: {
-  installation: VoiceInstallationState;
-  onInstall: () => void;
-}) {
+function VoiceInstallationCard(props: { installation: OfflineVoiceView; onInstall: () => void }) {
   const isPreparing = () => props.installation.status === "preparing";
   const isReady = () => props.installation.status === "ready";
   const actionLabel = () =>
@@ -630,6 +649,7 @@ interface EnhancedSelectOption {
   label: string;
   description: string;
   meta: string;
+  fontFamily?: string;
 }
 
 interface EnhancedSelectProps {
@@ -675,14 +695,28 @@ const narrationSpeedOptions: readonly EnhancedSelectOption[] = [
   }
 ];
 
-function VoiceSelect(props: { voiceId: string; onChange: (voiceId: string) => void }) {
+function VoiceSelect(props: {
+  voiceId: string;
+  voices: readonly NarrationVoice[];
+  sourceLabel: string;
+  onChange: (voiceId: string) => void;
+}) {
   const options = () =>
-    SUPPORTED_NARRATION_VOICES.map((voice) => ({
-      id: voice.id,
-      label: voice.label,
-      description: voice.description,
-      meta: voice.locale
-    }));
+    props.voices.length > 0
+      ? props.voices.map((voice) => ({
+          id: voice.id,
+          label: voice.label,
+          description: voice.description,
+          meta: voice.locale
+        }))
+      : [
+          {
+            id: props.voiceId,
+            label: "No voice ready",
+            description: "Download narration files below",
+            meta: "Offline"
+          }
+        ];
 
   return (
     <EnhancedSelect
@@ -690,7 +724,7 @@ function VoiceSelect(props: { voiceId: string; onChange: (voiceId: string) => vo
       ariaLabel="Narration voice"
       value={props.voiceId}
       options={options()}
-      triggerMeta="Local narration"
+      triggerMeta={props.sourceLabel}
       icon={HeadphonesIcon}
       onChange={props.onChange}
     />
@@ -711,10 +745,51 @@ function SpeedSelect(props: { value: number; onChange: (value: number) => void }
   );
 }
 
+function FontSelect(props: {
+  label: string;
+  ariaLabel: string;
+  value: string | null;
+  defaultFamily: string;
+  usage: string;
+  families: readonly string[];
+  onChange: (fontFamily: string | null) => void;
+}) {
+  const options = () => [
+    {
+      id: "",
+      label: "Sonelle default",
+      description: props.defaultFamily,
+      meta: props.usage,
+      fontFamily: props.defaultFamily
+    },
+    ...props.families.map((family) => ({
+      id: family,
+      label: family,
+      description: "Installed on this computer",
+      meta: props.usage,
+      fontFamily: family
+    }))
+  ];
+
+  return (
+    <EnhancedSelect
+      label={props.label}
+      ariaLabel={props.ariaLabel}
+      value={props.value ?? ""}
+      options={options()}
+      triggerMeta={props.usage}
+      icon={WordIcon}
+      onChange={(value) => props.onChange(value.length > 0 ? value : null)}
+    />
+  );
+}
+
 function EnhancedSelect(props: EnhancedSelectProps) {
   const [isOpen, setIsOpen] = createSignal(false);
   const [highlightedIndex, setHighlightedIndex] = createSignal(0);
   let root: HTMLDivElement | undefined;
+  let typeaheadReset: ReturnType<typeof setTimeout> | undefined;
+  let typeahead = "";
   const Icon = props.icon;
 
   const selectId = props.label.toLowerCase().replace(/[^a-z0-9]+/gu, "-");
@@ -782,6 +857,23 @@ function EnhancedSelect(props: EnhancedSelectProps) {
       }
       props.onChange(highlightedOption().id);
       closeMenu();
+      return;
+    }
+
+    if (event.key.length === 1 && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      typeahead += event.key.toLocaleLowerCase();
+      clearTimeout(typeaheadReset);
+      typeaheadReset = setTimeout(() => {
+        typeahead = "";
+      }, 700);
+      const match = props.options.findIndex((option) =>
+        option.label.toLocaleLowerCase().startsWith(typeahead)
+      );
+      if (match >= 0) {
+        event.preventDefault();
+        if (!isOpen()) setIsOpen(true);
+        setHighlightedIndex(match);
+      }
     }
   };
 
@@ -791,7 +883,10 @@ function EnhancedSelect(props: EnhancedSelectProps) {
     };
 
     document.addEventListener("pointerdown", handlePointerDown);
-    onCleanup(() => document.removeEventListener("pointerdown", handlePointerDown));
+    onCleanup(() => {
+      clearTimeout(typeaheadReset);
+      document.removeEventListener("pointerdown", handlePointerDown);
+    });
   });
 
   return (
@@ -811,7 +906,7 @@ function EnhancedSelect(props: EnhancedSelectProps) {
         <span class="enhanced-select-icon" aria-hidden="true">
           <Icon />
         </span>
-        <span class="enhanced-select-copy">
+        <span class="enhanced-select-copy" style={{ "font-family": selectedOption().fontFamily }}>
           <strong>{selectedOption().label}</strong>
           <small>{selectedOption().description}</small>
           <span class="enhanced-select-meta">
@@ -851,7 +946,10 @@ function EnhancedSelect(props: EnhancedSelectProps) {
                 <span class="enhanced-select-icon" aria-hidden="true">
                   <Icon />
                 </span>
-                <span class="enhanced-select-option-copy">
+                <span
+                  class="enhanced-select-option-copy"
+                  style={{ "font-family": option.fontFamily }}
+                >
                   <strong>{option.label}</strong>
                   <small>{option.description}</small>
                   <span class="enhanced-select-meta">

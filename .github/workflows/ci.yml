@@ -51,7 +51,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.95.0
         with:
-          components: rustfmt
+          components: clippy, rustfmt
 
       - name: Cache Rust builds
         uses: swatinem/rust-cache@v2
@@ -78,6 +78,12 @@ jobs:
 
       - name: Check native shell
         run: cargo check --workspace --locked
+
+      - name: Lint native shell
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test native shell
+        run: cargo test --workspace --locked
 
   bundle-linux:
     name: Build Linux desktop bundle

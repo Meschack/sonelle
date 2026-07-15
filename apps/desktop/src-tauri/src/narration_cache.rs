@@ -12,6 +12,10 @@ static NARRATION_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 #[serde(rename_all = "camelCase")]
 pub struct PreparedNarrationManifest {
     pub asset_id: String,
+    #[serde(default)]
+    pub book_id: String,
+    #[serde(default)]
+    pub chapter_id: String,
     pub source_url: String,
     pub sample_rate: u32,
     pub sample_count: u64,
@@ -65,6 +69,9 @@ impl NarrationAssetCache {
         if manifest.asset_id != asset_id {
             return Ok(None);
         }
+        if !audio_matches_manifest(&audio_path, &manifest) {
+            return Ok(None);
+        }
         Ok(Some(PreparedNarrationAsset {
             manifest,
             audio_path,
@@ -96,8 +103,9 @@ impl NarrationAssetCache {
 
         fs::write(temporary.join("audio.wav"), audio_bytes)
             .map_err(|_| "We couldn't save prepared audio.".to_string())?;
+        let audio_path = destination.join("audio.wav");
         let mut stored_manifest = manifest.clone();
-        stored_manifest.source_url = temporary.join("audio.wav").to_string_lossy().into_owned();
+        stored_manifest.source_url = audio_path.to_string_lossy().into_owned();
         write_manifest(&temporary.join("manifest.json"), &stored_manifest)?;
 
         if destination.exists() {
@@ -107,13 +115,8 @@ impl NarrationAssetCache {
         fs::rename(&temporary, &destination)
             .map_err(|_| "We couldn't finish prepared audio.".to_string())?;
 
-        let audio_path = destination.join("audio.wav");
-        let mut final_manifest = manifest.clone();
-        final_manifest.source_url = audio_path.to_string_lossy().into_owned();
-        write_manifest(&destination.join("manifest.json"), &final_manifest)?;
-
         Ok(PreparedNarrationAsset {
-            manifest: final_manifest,
+            manifest: stored_manifest,
             audio_path,
         })
     }
@@ -134,13 +137,33 @@ impl NarrationAssetCache {
         })
     }
 
-    pub fn stats(&self) -> Result<NarrationCacheStats, String> {
+    pub fn clear_book(&self, book_id: &str) -> Result<NarrationCacheStats, String> {
+        let _guard = NARRATION_CACHE_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .map_err(|_| "We couldn't clear prepared audio.".to_string())?;
         if !self.root.exists() {
-            return Ok(NarrationCacheStats {
-                asset_count: 0,
-                covered_sentence_count: 0,
-                size_bytes: 0,
-            });
+            return Ok(empty_stats());
+        }
+
+        for directory in matching_asset_directories(&self.root, book_id)? {
+            fs::remove_dir_all(directory)
+                .map_err(|_| "We couldn't clear prepared audio.".to_string())?;
+        }
+        Ok(empty_stats())
+    }
+
+    pub fn stats(&self) -> Result<NarrationCacheStats, String> {
+        self.stats_for_book(None)
+    }
+
+    pub fn book_stats(&self, book_id: &str) -> Result<NarrationCacheStats, String> {
+        self.stats_for_book(Some(book_id))
+    }
+
+    fn stats_for_book(&self, book_id: Option<&str>) -> Result<NarrationCacheStats, String> {
+        if !self.root.exists() {
+            return Ok(empty_stats());
         }
 
         let mut pending = vec![self.root.clone()];
@@ -158,17 +181,17 @@ impl NarrationAssetCache {
                     pending.push(path);
                     continue;
                 }
-                if path.file_name().is_some_and(|name| name == "audio.wav") {
-                    size_bytes += entry
-                        .metadata()
-                        .map_err(|_| "We couldn't inspect prepared audio.".to_string())?
-                        .len();
-                }
                 if path.file_name().is_some_and(|name| name == "manifest.json") {
                     let manifest = read_manifest(&path)?;
                     validate_manifest(&manifest)?;
+                    if book_id.is_some_and(|expected| manifest.book_id != expected) {
+                        continue;
+                    }
                     asset_count += 1;
                     covered_sentence_count += manifest.sentences.len();
+                    size_bytes += fs::metadata(path.with_file_name("audio.wav"))
+                        .map_err(|_| "We couldn't inspect prepared audio.".to_string())?
+                        .len();
                 }
             }
         }
@@ -186,6 +209,47 @@ impl NarrationAssetCache {
         }
         Ok(self.root.join(asset_id))
     }
+}
+
+fn matching_asset_directories(root: &Path, book_id: &str) -> Result<Vec<PathBuf>, String> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut matching = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)
+            .map_err(|_| "We couldn't inspect prepared audio.".to_string())?
+            .flatten()
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.file_name().is_some_and(|name| name == "manifest.json") {
+                let manifest = read_manifest(&path)?;
+                validate_manifest(&manifest)?;
+                if manifest.book_id == book_id {
+                    if let Some(parent) = path.parent() {
+                        matching.push(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+    Ok(matching)
+}
+
+fn empty_stats() -> NarrationCacheStats {
+    NarrationCacheStats {
+        asset_count: 0,
+        covered_sentence_count: 0,
+        size_bytes: 0,
+    }
+}
+
+fn audio_matches_manifest(path: &Path, manifest: &PreparedNarrationManifest) -> bool {
+    let Ok(reader) = hound::WavReader::open(path) else {
+        return false;
+    };
+    reader.spec().sample_rate == manifest.sample_rate
+        && u64::from(reader.duration()) == manifest.sample_count
 }
 
 pub fn validate_manifest(manifest: &PreparedNarrationManifest) -> Result<(), String> {
@@ -242,6 +306,7 @@ fn safe_asset_id(asset_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{NarrationAssetCache, NarrationSentenceSpan, PreparedNarrationManifest};
+    use crate::narration_wav::float_wav;
     use std::{
         fs,
         path::PathBuf,
@@ -252,8 +317,9 @@ mod tests {
     fn writes_and_reads_valid_assets_atomically() {
         let root = test_root("cache-put");
         let cache = NarrationAssetCache::open(root.clone());
+        let audio = valid_audio();
         let asset = cache
-            .put(&manifest("asset-a", "model-a"), b"audio")
+            .put(&manifest("asset-a", "model-a"), &audio)
             .expect("asset should write");
 
         assert!(asset.audio_path.exists());
@@ -267,6 +333,26 @@ mod tests {
                 .asset_id,
             "asset-a"
         );
+        assert_eq!(
+            asset.manifest.source_url,
+            root.join("asset-a/audio.wav").to_string_lossy()
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn treats_corrupted_audio_as_a_cache_miss() {
+        let root = test_root("cache-corrupt-audio");
+        let cache = NarrationAssetCache::open(root.clone());
+        cache
+            .put(&manifest("asset-a", "model-a"), &valid_audio())
+            .expect("asset should write");
+        fs::write(root.join("asset-a/audio.wav"), b"broken").expect("audio should corrupt");
+
+        assert!(cache
+            .get("asset-a")
+            .expect("cache should inspect")
+            .is_none());
         fs::remove_dir_all(root).ok();
     }
 
@@ -331,9 +417,35 @@ mod tests {
         assert!(!root.exists());
     }
 
+    #[test]
+    fn summarizes_and_clears_only_one_books_assets() {
+        let root = test_root("book-cache-maintenance");
+        let cache = NarrationAssetCache::open(root.clone());
+        let first = manifest("asset-a", "model-a");
+        let mut second = manifest("asset-b", "model-a");
+        second.book_id = "book-b".to_string();
+        cache
+            .put(&first, &valid_audio())
+            .expect("first asset should write");
+        cache
+            .put(&second, &valid_audio())
+            .expect("second asset should write");
+
+        let stats = cache.book_stats("book-a").expect("book stats should load");
+        assert_eq!(stats.asset_count, 1);
+        assert_eq!(stats.covered_sentence_count, 2);
+
+        cache.clear_book("book-a").expect("book cache should clear");
+        assert!(cache.get("asset-a").expect("cache should load").is_none());
+        assert!(cache.get("asset-b").expect("cache should load").is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn manifest(asset_id: &str, model_revision: &str) -> PreparedNarrationManifest {
         PreparedNarrationManifest {
             asset_id: asset_id.to_string(),
+            book_id: "book-a".to_string(),
+            chapter_id: "chapter-a".to_string(),
             source_url: "pending".to_string(),
             sample_rate: 1_000,
             sample_count: 1_000,
@@ -354,6 +466,10 @@ mod tests {
             voice_id: "voice-a".to_string(),
             source_text_digest: "digest".to_string(),
         }
+    }
+
+    fn valid_audio() -> Vec<u8> {
+        float_wav(1_000, &vec![0.0; 1_000]).expect("test audio should encode")
     }
 
     fn test_root(label: &str) -> PathBuf {

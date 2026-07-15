@@ -133,9 +133,9 @@ must include stripping, licenses, platform runtime files, and Tauri integration.
   proves the tested model-load failure path can report an error without terminating the host
   process; missing files and incompatible model revisions still need explicit coverage.
 - Default ONNX Runtime allocation reached 1,220 MiB RSS while bounded allocation reduced the highest
-  observed sample to 689 MiB, but the bounded Kokoro run was slower and these are single-run,
-  non-isolated measurements. Repeated p50/p95 measurements are required before selecting the
-  production allocation policy.
+  observed sample to 689 MiB. Production now uses bounded intra/inter-op threads, disables parallel
+  execution, memory patterns, and the CPU arena, and keeps Supertonic lookahead at one passage.
+  Repeated p50/p95 measurements remain useful for tuning within those bounds.
 - RSS remained hundreds of MiB immediately after ordinary destructors, then returned to 33-36 MiB
   after a diagnostic `malloc_trim(0)` on glibc. That strongly suggests allocator-retained freed pages
   rather than live model sessions on this Linux run. Trimming is evidence tooling, not yet a
@@ -194,23 +194,17 @@ highlighting still fails.
 | Dependency or model       | Pinned license       | Redistribution reviewed | Notices prepared | Decision |
 | ------------------------- | -------------------- | ----------------------- | ---------------- | -------- |
 | Kokoro source and weights | Apache-2.0           | Pending                 | Pending          | Pending  |
-| Misaki / English G2P data | Pending verification | Pending                 | Pending          | Pending  |
-| `espeak-ng` fallback      | Pending verification | Pending                 | Pending          | Pending  |
+| Misaki / English G2P data | MIT                  | Pending                 | Pending          | Pending  |
+| English OOV predictor     | BSD-4-Clause         | Pending                 | Pending          | Pending  |
+| `espeak-ng` fallback      | GPL-3.0-or-later     | Not shipped             | Not applicable   | Rejected |
 | Supertonic source         | MIT                  | Pending                 | Pending          | Pending  |
 | Supertonic 3 model        | OpenRAIL-M           | Pending                 | Pending          | Pending  |
 | ONNX Runtime              | Pending verification | Pending                 | Pending          | Pending  |
 
 ## Exit Decision
 
-Phase 0 is not complete until this report names:
-
-- the production runtime shape;
-- the pinned engine and model revisions;
-- the Kokoro preprocessing and timing strategy;
-- the model installation and unloading policy;
-- accepted performance budgets;
-- platform-specific packaging requirements;
-- license obligations and prepared notices;
-- rejected alternatives with measured reasons.
-
-Until then, production narration contracts remain unchanged and Piper remains the working adapter.
+The spike graduated into the hybrid runtime recorded by decisions 0016 through 0021. Production now
+uses pinned native ONNX packs, Kokoro duration-backed sentence spans, bounded reusable sessions,
+verified installation, and Kokoro/Supertonic routing. Piper is retained only as an explicit
+compatibility adapter. The tables above remain the measurements captured during the spike rather
+than a description of current production behavior.

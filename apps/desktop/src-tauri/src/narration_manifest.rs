@@ -1,16 +1,75 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock},
+};
 
+use ort::session::RunOptions;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
-use crate::kokoro_manifest::render_kokoro_manifest;
+use crate::kokoro_manifest::render_kokoro_manifest_with_options;
 use crate::narration_cache::{
-    NarrationAssetCache, NarrationSentenceSpan, PreparedNarrationManifest,
+    NarrationAssetCache, NarrationCacheStats, NarrationSentenceSpan, PreparedNarrationManifest,
 };
-use crate::narration_engine_pack::{engine_installation_path, engine_is_ready};
+use crate::narration_engine_pack::{
+    engine_installation_path, engine_is_ready, engine_model_revision,
+};
 use crate::narration_rendered_audio::RenderedManifestAudio;
-use crate::supertonic_narration::render_supertonic_manifest;
+use crate::supertonic_narration::render_supertonic_manifest_with_options;
+
+static CANCELLED_NARRATIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static ACTIVE_NARRATIONS: OnceLock<Mutex<HashMap<String, Arc<RunOptions>>>> = OnceLock::new();
+static MANIFEST_PREPARATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+trait NarrationProvider: Sync {
+    fn preparation_revision(&self) -> &'static str;
+
+    fn render(
+        &self,
+        engine_path: &std::path::Path,
+        request: &ManifestNarrationRequest,
+        run_options: &RunOptions,
+    ) -> Result<RenderedManifestAudio, String>;
+}
+
+struct KokoroProvider;
+struct SupertonicProvider;
+
+impl NarrationProvider for KokoroProvider {
+    fn preparation_revision(&self) -> &'static str {
+        "kokoro-text-v2"
+    }
+
+    fn render(
+        &self,
+        engine_path: &std::path::Path,
+        request: &ManifestNarrationRequest,
+        run_options: &RunOptions,
+    ) -> Result<RenderedManifestAudio, String> {
+        render_kokoro_manifest_with_options(engine_path, request, run_options)
+    }
+}
+
+impl NarrationProvider for SupertonicProvider {
+    fn preparation_revision(&self) -> &'static str {
+        "supertonic-text-v2"
+    }
+
+    fn render(
+        &self,
+        engine_path: &std::path::Path,
+        request: &ManifestNarrationRequest,
+        run_options: &RunOptions,
+    ) -> Result<RenderedManifestAudio, String> {
+        render_supertonic_manifest_with_options(engine_path, request, run_options)
+    }
+}
+
+static KOKORO_PROVIDER: KokoroProvider = KokoroProvider;
+static SUPERTONIC_PROVIDER: SupertonicProvider = SupertonicProvider;
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -63,23 +122,181 @@ pub fn prepare_manifest_narration(
     app: &AppHandle,
     request: ManifestNarrationRequest,
 ) -> Result<PreparedManifestNarration, String> {
-    if !engine_is_ready(app, &request.engine_id)? {
-        return Err("Download narration files to listen offline.".to_string());
+    let cancellation = NarrationCancellation::new(request.request_id.clone())?;
+    ensure_narration_not_cancelled(&request.request_id)?;
+    let installed_model_revision = engine_model_revision(&request.engine_id)?;
+    if request.model_revision != installed_model_revision {
+        return Err("Narration files changed. Please try again.".to_string());
     }
-
+    log_manifest_request("prepare", &request);
     let root = app
         .path()
         .app_data_dir()
         .map(|dir| dir.join("narration-v3"))
         .map_err(|_| "We couldn't open prepared audio.".to_string())?;
-    let engine_path = engine_installation_path(app, &request.engine_id)?;
-    let rendered_audio = match request.engine_id.as_str() {
-        "kokoro" => Some(render_kokoro_manifest(&engine_path, &request)?),
-        "supertonic" => Some(render_supertonic_manifest(&engine_path, &request)?),
-        _ => None,
-    };
+    if let Some(prepared) =
+        cached_manifest_narration_at(root.clone(), &request).inspect_err(|error| {
+            log_manifest_error("cache", &request, error);
+        })?
+    {
+        ensure_narration_not_cancelled(&request.request_id)?;
+        return Ok(prepared);
+    }
 
-    prepare_manifest_narration_at(root, request, rendered_audio)
+    let _preparation = MANIFEST_PREPARATION_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "Narration preparation was interrupted.".to_string())?;
+    ensure_narration_not_cancelled(&request.request_id)?;
+    if let Some(prepared) =
+        cached_manifest_narration_at(root.clone(), &request).inspect_err(|error| {
+            log_manifest_error("cache", &request, error);
+        })?
+    {
+        return Ok(prepared);
+    }
+
+    if !engine_is_ready(app, &request.engine_id)? {
+        return Err("Download narration files to listen offline.".to_string());
+    }
+
+    let engine_path = engine_installation_path(app, &request.engine_id)?;
+    let provider = narration_provider(&request.engine_id)?;
+    let rendered_audio = Some(
+        provider
+            .render(&engine_path, &request, cancellation.run_options())
+            .inspect_err(|error| {
+                log_manifest_error(&format!("{}-render", request.engine_id), &request, error);
+            })?,
+    );
+    ensure_narration_not_cancelled(&request.request_id)?;
+
+    let request_for_cache_log = request.clone();
+    prepare_manifest_narration_at(root, request, rendered_audio).inspect_err(|error| {
+        log_manifest_error("cache", &request_for_cache_log, error);
+    })
+}
+
+pub fn cancel_manifest_narration(request_id: String) {
+    let Ok(mut cancelled) = CANCELLED_NARRATIONS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+    else {
+        return;
+    };
+    cancelled.insert(request_id.clone());
+    if let Ok(active) = ACTIVE_NARRATIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        if let Some(run_options) = active.get(&request_id) {
+            let _ = run_options.terminate();
+        }
+    }
+}
+
+pub fn ensure_narration_not_cancelled(request_id: &str) -> Result<(), String> {
+    let cancelled = CANCELLED_NARRATIONS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map_err(|_| "Narration preparation was interrupted.".to_string())?;
+    if cancelled.contains(request_id) {
+        return Err("Narration preparation was cancelled.".to_string());
+    }
+    Ok(())
+}
+
+struct NarrationCancellation {
+    request_id: String,
+    run_options: Arc<RunOptions>,
+}
+
+impl NarrationCancellation {
+    fn new(request_id: String) -> Result<Self, String> {
+        let run_options = Arc::new(
+            RunOptions::new()
+                .map_err(|_| "Sonelle couldn't start narration preparation.".to_string())?,
+        );
+        let cancelled = CANCELLED_NARRATIONS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .map_err(|_| "Narration preparation was interrupted.".to_string())?;
+        let mut active = ACTIVE_NARRATIONS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .map_err(|_| "Narration preparation was interrupted.".to_string())?;
+        if cancelled.contains(&request_id) {
+            let _ = run_options.terminate();
+        }
+        active.insert(request_id.clone(), Arc::clone(&run_options));
+        drop(active);
+        drop(cancelled);
+        Ok(Self {
+            request_id,
+            run_options,
+        })
+    }
+
+    fn run_options(&self) -> &RunOptions {
+        &self.run_options
+    }
+}
+
+impl Drop for NarrationCancellation {
+    fn drop(&mut self) {
+        let Ok(mut cancelled) = CANCELLED_NARRATIONS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+        else {
+            return;
+        };
+        if let Ok(mut active) = ACTIVE_NARRATIONS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+        {
+            active.remove(&self.request_id);
+        }
+        cancelled.remove(&self.request_id);
+    }
+}
+
+fn narration_provider(engine_id: &str) -> Result<&'static dyn NarrationProvider, String> {
+    match engine_id {
+        "kokoro" => Ok(&KOKORO_PROVIDER),
+        "supertonic" => Ok(&SUPERTONIC_PROVIDER),
+        _ => Err("Prepared narration engine is not available yet.".to_string()),
+    }
+}
+
+pub fn manifest_cache_summary(
+    app: &AppHandle,
+    book_id: &str,
+) -> Result<NarrationCacheStats, String> {
+    NarrationAssetCache::open(manifest_cache_root(app)?).book_stats(book_id)
+}
+
+pub fn clear_manifest_cache(app: &AppHandle, book_id: &str) -> Result<NarrationCacheStats, String> {
+    NarrationAssetCache::open(manifest_cache_root(app)?).clear_book(book_id)
+}
+
+fn manifest_cache_root(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("narration-v3"))
+        .map_err(|_| "We couldn't open prepared audio.".to_string())
+}
+
+fn cached_manifest_narration_at(
+    root: PathBuf,
+    request: &ManifestNarrationRequest,
+) -> Result<Option<PreparedManifestNarration>, String> {
+    validate_request(request)?;
+
+    let asset_id = create_asset_id(request)?;
+    let cache = NarrationAssetCache::open(root);
+    Ok(cache
+        .get(&asset_id)?
+        .map(|asset| prepared_response(asset.manifest, true)))
 }
 
 pub fn prepare_manifest_narration_at(
@@ -89,21 +306,27 @@ pub fn prepare_manifest_narration_at(
 ) -> Result<PreparedManifestNarration, String> {
     validate_request(&request)?;
 
-    let asset_id = create_asset_id(&request);
+    let asset_id = create_asset_id(&request)?;
     let cache = NarrationAssetCache::open(root);
-    if let Some(asset) = cache.get(&asset_id)? {
+    if let Some(mut asset) = cache.get(&asset_id)? {
+        if asset.manifest.book_id.is_empty() {
+            asset.manifest.book_id = request.passage.book_id.clone();
+            asset.manifest.chapter_id = request.passage.chapter_id.clone();
+            let audio = fs::read(&asset.audio_path)
+                .map_err(|_| "We couldn't refresh prepared audio.".to_string())?;
+            asset = cache.put(&asset.manifest, &audio)?;
+        }
         return Ok(prepared_response(asset.manifest, true));
     }
 
     let rendered_audio = match rendered_audio {
         Some(audio) => audio,
-        None if request.engine_id == "kokoro" => {
-            return Err("English narration is not ready yet.".to_string());
-        }
-        None => render_placeholder_audio(&request)?,
+        None => return Err("Prepared narration audio is not ready yet.".to_string()),
     };
     let manifest = PreparedNarrationManifest {
         asset_id,
+        book_id: request.passage.book_id,
+        chapter_id: request.passage.chapter_id,
         source_url: String::new(),
         sample_rate: rendered_audio.sample_rate,
         sample_count: rendered_audio.sample_count,
@@ -153,9 +376,22 @@ fn prepared_response(
     }
 }
 
-fn create_asset_id(request: &ManifestNarrationRequest) -> String {
+fn create_asset_id(request: &ManifestNarrationRequest) -> Result<String, String> {
+    let provider = narration_provider(&request.engine_id)?;
+    Ok(create_asset_id_for_revision(
+        request,
+        provider.preparation_revision(),
+    ))
+}
+
+fn create_asset_id_for_revision(
+    request: &ManifestNarrationRequest,
+    preparation_revision: &str,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(request.engine_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(preparation_revision.as_bytes());
     hasher.update(b"\0");
     hasher.update(request.model_revision.as_bytes());
     hasher.update(b"\0");
@@ -189,76 +425,29 @@ fn hex_digest(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn sample_rate_for_engine(engine_id: &str) -> u32 {
-    match engine_id {
-        "supertonic" => 44_100,
-        _ => 24_000,
-    }
+fn log_manifest_request(stage: &str, request: &ManifestNarrationRequest) {
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[sonelle][native][manifest:{stage}] engine={} voice={} passage={} sentences={} chars={}",
+        request.engine_id,
+        request.voice_id,
+        request.passage.id,
+        request.passage.sentences.len(),
+        request
+            .passage
+            .sentences
+            .iter()
+            .map(|sentence| sentence.text.chars().count())
+            .sum::<usize>()
+    );
 }
 
-fn create_sentence_spans(
-    sentences: &[ManifestNarrationSentence],
-    sample_rate: u32,
-) -> Vec<NarrationSentenceSpan> {
-    let mut start_sample = 0;
-    sentences
-        .iter()
-        .map(|sentence| {
-            let word_count = sentence.text.split_whitespace().count() as u64;
-            let sample_count =
-                u64::from(sample_rate / 2).max(word_count * u64::from(sample_rate / 4));
-            let span = NarrationSentenceSpan {
-                sentence_id: sentence.id.clone(),
-                start_sample,
-                end_sample: start_sample + sample_count,
-            };
-            start_sample = span.end_sample;
-            span
-        })
-        .collect()
-}
-
-fn render_placeholder_audio(
-    request: &ManifestNarrationRequest,
-) -> Result<RenderedManifestAudio, String> {
-    let sample_rate = sample_rate_for_engine(&request.engine_id);
-    let sentences = create_sentence_spans(&request.passage.sentences, sample_rate);
-    let sample_count = sentences.last().map(|span| span.end_sample).unwrap_or(0);
-    Ok(RenderedManifestAudio {
-        sample_rate,
-        sample_count,
-        sentences,
-        wav: silent_wav(sample_rate, sample_count)?,
-    })
-}
-
-fn silent_wav(sample_rate: u32, sample_count: u64) -> Result<Vec<u8>, String> {
-    let data_bytes = sample_count
-        .checked_mul(2)
-        .ok_or_else(|| "Prepared narration audio is too large.".to_string())?;
-    let riff_size = 36_u64
-        .checked_add(data_bytes)
-        .ok_or_else(|| "Prepared narration audio is too large.".to_string())?;
-    if riff_size > u64::from(u32::MAX) || data_bytes > u64::from(u32::MAX) {
-        return Err("Prepared narration audio is too large.".to_string());
-    }
-
-    let mut wav = Vec::with_capacity(44 + data_bytes as usize);
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(riff_size as u32).to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16_u32.to_le_bytes());
-    wav.extend_from_slice(&1_u16.to_le_bytes());
-    wav.extend_from_slice(&1_u16.to_le_bytes());
-    wav.extend_from_slice(&sample_rate.to_le_bytes());
-    wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
-    wav.extend_from_slice(&2_u16.to_le_bytes());
-    wav.extend_from_slice(&16_u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&(data_bytes as u32).to_le_bytes());
-    wav.resize(44 + data_bytes as usize, 0);
-
-    Ok(wav)
+fn log_manifest_error(stage: &str, request: &ManifestNarrationRequest, error: &str) {
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[sonelle][native][manifest:{stage}] engine={} voice={} passage={} error={}",
+        request.engine_id, request.voice_id, request.passage.id, error
+    );
 }
 
 #[cfg(test)]
@@ -266,8 +455,8 @@ mod tests {
     use std::{collections::BTreeMap, fs, path::PathBuf};
 
     use super::{
-        prepare_manifest_narration_at, ManifestNarrationPassage, ManifestNarrationRequest,
-        ManifestNarrationSentence,
+        create_asset_id_for_revision, prepare_manifest_narration_at, ManifestNarrationPassage,
+        ManifestNarrationRequest, ManifestNarrationSentence,
     };
     use crate::supertonic_narration::render_sentence_audio_to_manifest;
 
@@ -275,8 +464,14 @@ mod tests {
     fn prepares_and_reuses_cached_manifest_narration() {
         let root = tempfile_root("manifest-reuse");
         let request = request("supertonic");
+        let rendered = render_sentence_audio_to_manifest(
+            &request.passage.sentences,
+            44_100,
+            vec![vec![0.25; 4], vec![-0.25; 6]],
+        )
+        .expect("rendered audio should be valid");
 
-        let first = prepare_manifest_narration_at(root.clone(), request.clone(), None)
+        let first = prepare_manifest_narration_at(root.clone(), request.clone(), Some(rendered))
             .expect("manifest narration should prepare");
         let second = prepare_manifest_narration_at(root, request, None)
             .expect("manifest narration should be reused");
@@ -290,6 +485,16 @@ mod tests {
     }
 
     #[test]
+    fn separates_prepared_audio_when_provider_text_rules_change() {
+        let request = request("kokoro");
+
+        assert_ne!(
+            create_asset_id_for_revision(&request, "kokoro-text-v1"),
+            create_asset_id_for_revision(&request, "kokoro-text-v2")
+        );
+    }
+
+    #[test]
     fn rejects_kokoro_without_a_native_rendered_manifest() {
         let error = prepare_manifest_narration_at(
             tempfile_root("manifest-kokoro-pending"),
@@ -298,7 +503,29 @@ mod tests {
         )
         .expect_err("kokoro should not use placeholder audio");
 
-        assert_eq!(error, "English narration is not ready yet.");
+        assert_eq!(error, "Prepared narration audio is not ready yet.");
+    }
+
+    #[test]
+    fn reuses_cached_kokoro_manifest_without_rendering_again() {
+        let root = tempfile_root("manifest-kokoro-reuse");
+        let request = request("kokoro");
+        let rendered = render_sentence_audio_to_manifest(
+            &request.passage.sentences,
+            24_000,
+            vec![vec![0.25; 4], vec![-0.25; 6]],
+        )
+        .expect("rendered audio should be valid");
+
+        let first = prepare_manifest_narration_at(root.clone(), request.clone(), Some(rendered))
+            .expect("kokoro narration should prepare once");
+        let second = prepare_manifest_narration_at(root, request, None)
+            .expect("kokoro narration should be reused from cache");
+
+        assert!(!first.cached);
+        assert!(second.cached);
+        assert_eq!(first.asset_id, second.asset_id);
+        assert_eq!(first.source_url, second.source_url);
     }
 
     #[test]

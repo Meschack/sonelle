@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { isTauriRuntime } from "../platform/tauri-runtime";
 
 export type VoiceInstallationReadiness = "not-installed" | "preparing" | "ready" | "failed";
 
@@ -114,8 +115,4 @@ function readyBrowserVoice(voiceId: string): VoiceInstallationState {
     progress: 100,
     message: "Ready to listen offline."
   };
-}
-
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }

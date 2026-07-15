@@ -16,7 +16,7 @@ It is a ground-up rebuild on a saner base: Tauri, Solid, TypeScript, Rust, SQLit
 - Highlight the currently narrated sentence.
 - Use left click to select a sentence and right click on a word to open dictionary lookup.
 - Save words and bookmarks for later review.
-- Prepare local neural narration through Piper.
+- Prepare local neural narration through Kokoro for English and Supertonic for other languages.
 - Export book progress, saved words, and annotations.
 
 ## Downloads
@@ -27,7 +27,6 @@ Automated releases are built for:
 
 - Linux x64
 - macOS Apple Silicon
-- macOS Intel
 - Windows x64
 
 macOS builds currently use ad-hoc signing until a Developer ID certificate and notarization pipeline are configured.
@@ -43,7 +42,6 @@ Requirements:
 
 ```bash
 pnpm install
-pnpm setup:piper
 pnpm dev:desktop
 ```
 
@@ -55,6 +53,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 cargo check --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 Build the desktop app locally:
@@ -81,15 +80,13 @@ Every push to `main` runs CI. After CI passes, the release workflow:
 4. Builds platform bundles with `tauri-apps/tauri-action`.
 5. Publishes a GitHub Release with downloadable assets.
 
-Manual releases can also be triggered from the GitHub Actions `Release` workflow.
-
 ## Architecture Notes
 
 - Frontend: Solid + TypeScript
 - Desktop shell: Tauri v2
 - Native backend: Rust
 - Storage: SQLite through `rusqlite`
-- Narration: local Piper voices
+- Narration: local Kokoro and Supertonic providers with manifest-backed sentence alignment
 - Reader behavior: sentence-level playback and paragraph-preserving rendering
 
 Important docs:

@@ -12,9 +12,9 @@ Core event examples:
 - `BookImported`
 - `BookTextExtracted`
 - `ChapterSegmented`
-- `AudioPreparationRequested`
-- `SentenceAudioReady`
-- `AudioPreparationFailed`
+- `NarrationPreparationStarted`
+- `PassageNarrationReady`
+- `NarrationPlaybackFailed`
 - `PlaybackPositionChanged`
 - `WordInspected`
 - `BookmarkCreated`

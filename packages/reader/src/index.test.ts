@@ -322,12 +322,16 @@ describe("reader preferences", () => {
       createReaderPreferences({
         toolTab: "settings",
         libraryFilter: "bookmarked",
-        contentFontSize: 19
+        contentFontSize: 19,
+        contentFontFamily: "Literata",
+        uiFontFamily: "Inter"
       })
     ).toEqual({
       toolTab: "settings",
       libraryFilter: "bookmarked",
-      contentFontSize: 19
+      contentFontSize: 19,
+      contentFontFamily: "Literata",
+      uiFontFamily: "Inter"
     });
     expect(
       parseReaderPreferences(
@@ -340,20 +344,26 @@ describe("reader preferences", () => {
     ).toEqual({
       toolTab: "word",
       libraryFilter: "all",
-      contentFontSize: 24
+      contentFontSize: 24,
+      contentFontFamily: null,
+      uiFontFamily: null
     });
     expect(
       parseReaderPreferences(
         serializeReaderPreferences({
           toolTab: "search",
           libraryFilter: "in-progress",
-          contentFontSize: 13
+          contentFontSize: 13,
+          contentFontFamily: "  Source Serif 4  ",
+          uiFontFamily: "Bad\nFont"
         })
       )
     ).toEqual({
       toolTab: "search",
       libraryFilter: "in-progress",
-      contentFontSize: 14
+      contentFontSize: 14,
+      contentFontFamily: "Source Serif 4",
+      uiFontFamily: null
     });
   });
 });

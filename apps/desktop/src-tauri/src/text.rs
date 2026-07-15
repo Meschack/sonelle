@@ -52,6 +52,7 @@ pub fn segment_sentences(input: &str) -> Vec<String> {
     segment_normalized_sentences(&normalized)
 }
 
+#[cfg(test)]
 pub fn segment_paragraphs(input: &str) -> Vec<Vec<String>> {
     let paragraphs = normalize_reader_paragraphs(input);
     segment_normalized_paragraphs(&paragraphs)

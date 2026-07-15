@@ -13,8 +13,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@fontsource-variable/dm-sans": "^5.2.8",
-    "@fontsource/commit-mono": "^5.2.5",
     "@sonelle/audio": "workspace:*",
     "@sonelle/domain": "workspace:*",
     "@sonelle/learning": "workspace:*",
@@ -29,6 +27,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "happy-dom": "^20.10.6",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vite-plugin-solid": "^2.11.0"

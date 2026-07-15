@@ -11,6 +11,7 @@ import { createReaderEngineInstallationWorkflow } from "./reader-engine-installa
 const readyInstallation: EngineInstallationState = {
   engineId: "kokoro",
   status: "ready",
+  modelRevision: "kokoro-test",
   downloadSizeBytes: 0,
   downloadedBytes: 0,
   progress: 100,
@@ -51,12 +52,31 @@ describe("reader engine installation workflow", () => {
     expect(harness.states[harness.states.length - 1]).toEqual({
       engineId: "supertonic",
       status: "failed",
+      modelRevision: "",
       downloadSizeBytes: 0,
       downloadedBytes: 0,
       progress: null,
       message: "Please retry."
     });
     expect(harness.notices[harness.notices.length - 1]).toBe("Please retry.");
+    stop();
+  });
+
+  it("projects transient native progress without journaling it", async () => {
+    const harness = createHarness({ result: readyInstallation });
+    const stop = await harness.workflow.start();
+
+    harness.emitProgress({
+      ...readyInstallation,
+      status: "preparing",
+      downloadSizeBytes: 200,
+      downloadedBytes: 75,
+      progress: 37.5
+    });
+    await vi.waitFor(() =>
+      expect(harness.states[harness.states.length - 1]?.downloadedBytes).toBe(75)
+    );
+
     stop();
   });
 });
@@ -73,10 +93,14 @@ function createHarness(outcome: { result: EngineInstallationState } | { error: E
     if ("error" in outcome) throw outcome.error;
     return { ...outcome.result, engineId };
   });
+  let progressListener: (state: EngineInstallationState) => void = () => undefined;
   const repository: EngineInstallationRepository = {
     getStatus: async (engineId) => ({ ...readyInstallation, engineId }),
     install,
-    listen: async () => () => undefined
+    listen: async (listener) => {
+      progressListener = listener;
+      return () => undefined;
+    }
   };
   const workflow = createReaderEngineInstallationWorkflow({
     eventDispatcher: dispatcher,
@@ -87,5 +111,12 @@ function createHarness(outcome: { result: EngineInstallationState } | { error: E
     friendlyError: () => "Please retry."
   });
 
-  return { workflow, events, states, notices, install };
+  return {
+    workflow,
+    events,
+    states,
+    notices,
+    install,
+    emitProgress: (state: EngineInstallationState) => progressListener(state)
+  };
 }

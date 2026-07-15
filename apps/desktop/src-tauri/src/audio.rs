@@ -19,6 +19,7 @@ const NARRATION_VOICE_CONFIG: &str =
 const MISSING_NEURAL_VOICE_MESSAGE: &str = "Download this voice in Sonelle to listen offline.";
 const NARRATION_CACHE_VERSION: &str = "piper-v2";
 const CACHE_STATS_FILE: &str = "cache-stats.json";
+const CACHE_BOOK_FILE: &str = "book.json";
 const LOCAL_VOICE_STATE_DIR_NAMES: &[&str] = &[".sonelle", ".readex"];
 const PIPER_WORKER_SCRIPT: &str = r#"
 import json
@@ -119,6 +120,9 @@ pub fn prepare_narration(
     let cache = SentenceAudioCache::open(app, &request)?;
     let adapter = LocalSpeechAdapter;
     let output = adapter.prepare(&request, &cache)?;
+    if output.source_url.is_some() {
+        cache.record_book(&request.book_id)?;
+    }
 
     Ok(PreparedSentenceAudio {
         book_id: request.book_id,
@@ -145,16 +149,22 @@ pub fn stop_narration() -> Result<(), String> {
     Ok(())
 }
 
-pub fn audio_cache_summary(app: &AppHandle) -> Result<AudioCacheStats, String> {
+pub fn audio_cache_summary_for_book(
+    app: &AppHandle,
+    book_id: &str,
+) -> Result<AudioCacheStats, String> {
     let root = audio_cache_root(app)?;
     let _guard = CACHE_STATS_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
         .map_err(|_| "We couldn't inspect prepared audio.".to_string())?;
-    load_or_rebuild_cache_stats(&root)
+    summarize_audio_cache_for_book_at(&root, book_id)
 }
 
-pub fn clear_audio_cache(app: &AppHandle) -> Result<AudioCacheStats, String> {
+pub fn clear_audio_cache_for_book(
+    app: &AppHandle,
+    book_id: &str,
+) -> Result<AudioCacheStats, String> {
     let root = audio_cache_root(app)?;
     let _synthesis_guard = SYNTHESIS_LOCK
         .get_or_init(|| Mutex::new(()))
@@ -166,7 +176,10 @@ pub fn clear_audio_cache(app: &AppHandle) -> Result<AudioCacheStats, String> {
         .map_err(|_| "We couldn't clear prepared audio.".to_string())?;
 
     if root.exists() {
-        fs::remove_dir_all(&root).map_err(|_| "We couldn't clear prepared audio.".to_string())?;
+        for directory in legacy_audio_directories_for_book(&root, book_id)? {
+            fs::remove_dir_all(directory)
+                .map_err(|_| "We couldn't clear prepared audio.".to_string())?;
+        }
     }
 
     Ok(AudioCacheStats {
@@ -611,6 +624,17 @@ impl SentenceAudioCache {
         ))
     }
 
+    fn record_book(&self, book_id: &str) -> Result<(), String> {
+        fs::create_dir_all(&self.dir)
+            .map_err(|_| "We couldn't update prepared audio.".to_string())?;
+        let metadata = serde_json::to_vec(&CachedAudioBook {
+            book_id: book_id.to_string(),
+        })
+        .map_err(|_| "We couldn't update prepared audio.".to_string())?;
+        fs::write(self.dir.join(CACHE_BOOK_FILE), metadata)
+            .map_err(|_| "We couldn't update prepared audio.".to_string())
+    }
+
     #[cfg(test)]
     fn for_root(app_data_dir: PathBuf, root: PathBuf, request: &SentenceAudioRequest) -> Self {
         let key = cache_key(request);
@@ -687,6 +711,59 @@ fn summarize_audio_cache_at(root: &Path) -> Result<AudioCacheStats, String> {
     })
 }
 
+fn summarize_audio_cache_for_book_at(
+    root: &Path,
+    book_id: &str,
+) -> Result<AudioCacheStats, String> {
+    let mut stats = AudioCacheStats {
+        sentence_count: 0,
+        size_bytes: 0,
+    };
+    for directory in legacy_audio_directories_for_book(root, book_id)? {
+        let audio_path = directory.join("sentence.wav");
+        if audio_path.is_file() {
+            stats.sentence_count += 1;
+            stats.size_bytes += fs::metadata(audio_path)
+                .map_err(|_| "We couldn't inspect prepared audio.".to_string())?
+                .len();
+        }
+    }
+    Ok(stats)
+}
+
+fn legacy_audio_directories_for_book(root: &Path, book_id: &str) -> Result<Vec<PathBuf>, String> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut matching = Vec::new();
+    for entry in
+        fs::read_dir(root).map_err(|_| "We couldn't inspect prepared audio.".to_string())?
+    {
+        let Ok(entry) = entry else { continue };
+        let directory = entry.path();
+        if !directory.is_dir() {
+            continue;
+        }
+        let Ok(contents) = fs::read(directory.join(CACHE_BOOK_FILE)) else {
+            continue;
+        };
+        let Ok(metadata) = serde_json::from_slice::<CachedAudioBook>(&contents) else {
+            continue;
+        };
+        if metadata.book_id == book_id {
+            matching.push(directory);
+        }
+    }
+    Ok(matching)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedAudioBook {
+    book_id: String,
+}
+
+#[cfg(test)]
 fn load_or_rebuild_cache_stats(root: &Path) -> Result<AudioCacheStats, String> {
     if let Some(stats) = read_cache_stats(root) {
         return Ok(stats);
@@ -735,9 +812,7 @@ fn wav_source_path(path: &Path) -> String {
 }
 
 fn command_path(command: &str) -> Option<PathBuf> {
-    let Some(path) = env::var_os("PATH") else {
-        return None;
-    };
+    let path = env::var_os("PATH")?;
 
     env::split_paths(&path)
         .map(|dir| dir.join(command))
@@ -964,7 +1039,7 @@ fn fake_wav_bytes(text: &str) -> Vec<u8> {
     data.extend_from_slice(&8u16.to_le_bytes());
     data.extend_from_slice(b"data");
     data.extend_from_slice(&data_len.to_le_bytes());
-    data.extend(std::iter::repeat(128u8).take(samples));
+    data.extend(std::iter::repeat_n(128u8, samples));
     data
 }
 
@@ -976,8 +1051,9 @@ mod tests {
 
     use super::{
         default_piper_voice_id, piper_model_exists, piper_voice_exists, record_prepared_audio,
-        summarize_audio_cache_at, voice_state_dirs_from, FakeSpeechAdapter, LocalSpeechAdapter,
-        PiperRuntime, SentenceAudioCache, SentenceAudioRequest, SpeechAdapter,
+        summarize_audio_cache_at, summarize_audio_cache_for_book_at, voice_state_dirs_from,
+        FakeSpeechAdapter, LocalSpeechAdapter, PiperRuntime, SentenceAudioCache,
+        SentenceAudioRequest, SpeechAdapter,
     };
 
     #[test]
@@ -1135,6 +1211,35 @@ mod tests {
         assert_eq!(stats.sentence_count, 1);
         assert_eq!(stats.size_bytes, 5);
 
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn summarizes_only_legacy_audio_owned_by_the_selected_book() {
+        let temp_dir = temp_audio_dir();
+        let root = temp_dir.join("audio");
+        for (book_id, sentence_id) in [("book-a", "sentence-a"), ("book-b", "sentence-b")] {
+            let request = SentenceAudioRequest {
+                book_id: book_id.to_string(),
+                chapter_id: "chapter".to_string(),
+                sentence_id: sentence_id.to_string(),
+                sentence_index: 0,
+                voice_id: default_piper_voice_id(),
+                text: "Prepared narration.".to_string(),
+            };
+            let cache = SentenceAudioCache::for_root(temp_dir.clone(), root.clone(), &request);
+            fs::create_dir_all(&cache.dir).expect("cache directory should exist");
+            fs::write(&cache.audio_path, b"audio").expect("audio should write");
+            cache
+                .record_book(book_id)
+                .expect("book ownership should write");
+        }
+
+        let stats = summarize_audio_cache_for_book_at(&root, "book-a")
+            .expect("book cache should summarize");
+
+        assert_eq!(stats.sentence_count, 1);
+        assert_eq!(stats.size_bytes, 5);
         fs::remove_dir_all(temp_dir).ok();
     }
 

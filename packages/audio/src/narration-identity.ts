@@ -1,4 +1,4 @@
-import type { NarrationEngineId, NarrationSentence } from "./narration-contracts";
+import type { NarrationEngineId, NarrationPassage, NarrationSentence } from "./narration-contracts";
 
 export interface NarrationAssetIdentityInput {
   schemaVersion: number;
@@ -32,6 +32,18 @@ export function createNarrationAssetIdentity(input: NarrationAssetIdentityInput)
     sampleRate: input.sampleRate,
     encodingRevision: input.encodingRevision
   });
+}
+
+export function digestNarrationPassageText(passage: Pick<NarrationPassage, "sentences">): string {
+  let hash = 2_166_136_261;
+  for (const sentence of passage.sentences) {
+    const value = `${sentence.id}\n${sentence.text}\n`;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16_777_619);
+    }
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function normalizeNarrationIdentityText(text: string): string {

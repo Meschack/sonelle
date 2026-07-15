@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::narration_pack::{
     install_narration_pack, installed_pack_is_ready, NarrationPack, NarrationPackArtifact,
-    NarrationPackDownloadClient,
+    NarrationPackDownloadClient, NarrationPackDownloadError,
 };
 
 const ENGINE_CATALOG: &str = include_str!("../../../../tools/narration-spike/engines.json");
@@ -23,6 +23,7 @@ static ENGINE_INSTALLATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 pub struct NarrationEngineInstallationStatus {
     pub engine_id: String,
     pub status: &'static str,
+    pub model_revision: String,
     pub download_size_bytes: u64,
     pub message: String,
 }
@@ -114,6 +115,68 @@ impl NarrationPackDownloadClient for NativeEngineDownloadClient {
             on_chunk(&buffer[..count])?;
         }
     }
+
+    fn stream_range(
+        &self,
+        url: &str,
+        start_byte: u64,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), String>,
+    ) -> Result<(), NarrationPackDownloadError> {
+        if let Some(path) = file_url_path(url) {
+            let mut file = fs::File::open(path).map_err(|_| {
+                NarrationPackDownloadError::Failed(
+                    "The narration files couldn't be opened. Check the catalog and retry."
+                        .to_string(),
+                )
+            })?;
+            file.seek(SeekFrom::Start(start_byte)).map_err(|_| {
+                NarrationPackDownloadError::Failed(
+                    "The narration file read was interrupted. Please retry.".to_string(),
+                )
+            })?;
+            let mut buffer = [0_u8; 64 * 1024];
+
+            loop {
+                let count = file.read(&mut buffer).map_err(|_| {
+                    NarrationPackDownloadError::Failed(
+                        "The narration file read was interrupted. Please retry.".to_string(),
+                    )
+                })?;
+                if count == 0 {
+                    return Ok(());
+                }
+                on_chunk(&buffer[..count]).map_err(NarrationPackDownloadError::Failed)?;
+            }
+        }
+
+        let mut response = ureq::get(url)
+            .header("User-Agent", "Sonelle narration engine installer")
+            .header("Range", format!("bytes={start_byte}-"))
+            .call()
+            .map_err(|_| {
+                NarrationPackDownloadError::Failed(
+                    "The narration files couldn't be downloaded. Check your connection and retry."
+                        .to_string(),
+                )
+            })?;
+        if response.status().as_u16() != 206 {
+            return Err(NarrationPackDownloadError::UnsupportedResume);
+        }
+
+        let mut reader = response.body_mut().as_reader();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let count = reader.read(&mut buffer).map_err(|_| {
+                NarrationPackDownloadError::Failed(
+                    "The narration download was interrupted. Please retry.".to_string(),
+                )
+            })?;
+            if count == 0 {
+                return Ok(());
+            }
+            on_chunk(&buffer[..count]).map_err(NarrationPackDownloadError::Failed)?;
+        }
+    }
 }
 
 pub fn engine_status(
@@ -168,6 +231,7 @@ pub fn engine_status_at(
     Ok(NarrationEngineInstallationStatus {
         engine_id: engine_id.to_string(),
         status: if ready { "ready" } else { "not-installed" },
+        model_revision: pack.revision.clone(),
         download_size_bytes: if ready { 0 } else { pack_size_bytes(&pack) },
         message: if ready {
             "Ready to listen offline.".to_string()
@@ -175,6 +239,10 @@ pub fn engine_status_at(
             "Download narration files to listen offline.".to_string()
         },
     })
+}
+
+pub fn engine_model_revision(engine_id: &str) -> Result<String, String> {
+    Ok(engine_pack(engine_id)?.revision)
 }
 
 fn engine_is_ready_at(root: &Path, engine_id: &str) -> Result<bool, String> {
@@ -248,10 +316,44 @@ fn engine_pack_from_catalog_json(
 
 fn engine_catalog_json() -> Result<String, String> {
     match std::env::var("SONELLE_NARRATION_ENGINE_CATALOG") {
-        Ok(path) if !path.trim().is_empty() => fs::read_to_string(path)
-            .map_err(|_| "Offline narration catalog is invalid.".to_string()),
+        Ok(path) if !path.trim().is_empty() => {
+            let path = resolve_catalog_path(Path::new(path.trim())).ok_or_else(|| {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[sonelle][native][narration-catalog:resolve] error=catalog-path-unavailable"
+                );
+                "Offline narration catalog couldn't be opened. Check the local catalog path and retry."
+                    .to_string()
+            })?;
+
+            fs::read_to_string(&path).map_err(|error| {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[sonelle][native][narration-catalog:read] error={}",
+                    error.to_string().replace(['\r', '\n'], " ")
+                );
+                "Offline narration catalog couldn't be opened. Check the local catalog path and retry."
+                    .to_string()
+            })
+        }
         _ => Ok(ENGINE_CATALOG.to_string()),
     }
+}
+
+fn resolve_catalog_path(path: &Path) -> Option<PathBuf> {
+    if path.is_absolute() {
+        return path.is_file().then(|| path.to_path_buf());
+    }
+
+    let cwd = std::env::current_dir().ok()?;
+    for base in cwd.ancestors() {
+        let candidate = base.join(path);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    None
 }
 
 fn file_url_path(url: &str) -> Option<PathBuf> {
@@ -304,7 +406,7 @@ fn emit_engine_progress(
 #[cfg(test)]
 mod tests {
     use super::{
-        engine_is_ready_at, engine_pack, engine_status_at, file_url_path,
+        engine_is_ready_at, engine_pack, engine_status_at, file_url_path, resolve_catalog_path,
         NativeEngineDownloadClient,
     };
     use crate::kokoro_manifest::render_kokoro_manifest;
@@ -314,10 +416,11 @@ mod tests {
     use crate::narration_pack::{
         install_narration_pack, installed_pack_is_ready, NarrationPackDownloadClient,
     };
+    use crate::supertonic_narration::render_supertonic_manifest;
     use std::collections::BTreeMap;
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -408,16 +511,30 @@ mod tests {
     }
 
     #[test]
+    fn resolves_catalog_paths_from_cwd_ancestors() {
+        let root = test_root("catalog-ancestor");
+        let nested = root.join("apps/desktop/src-tauri");
+        let catalog = root.join(".sonelle/narration-spike/local-engine-catalog.json");
+        fs::create_dir_all(&nested).expect("nested dir should write");
+        fs::create_dir_all(catalog.parent().expect("catalog parent")).expect("catalog dir");
+        fs::write(&catalog, "{}").expect("catalog should write");
+        let previous_cwd = std::env::current_dir().expect("cwd should load");
+
+        std::env::set_current_dir(&nested).expect("cwd should switch");
+        let resolved = resolve_catalog_path(Path::new(
+            ".sonelle/narration-spike/local-engine-catalog.json",
+        ))
+        .expect("catalog should resolve from an ancestor");
+        std::env::set_current_dir(previous_cwd).expect("cwd should restore");
+
+        assert_eq!(resolved, catalog);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     #[ignore = "installs the local Kokoro runtime pack and renders with the real ONNX model"]
     fn installs_local_kokoro_catalog_and_renders_from_the_installed_pack() {
-        let catalog = [
-            PathBuf::from(".sonelle/narration-spike/local-engine-catalog.json"),
-            PathBuf::from("../../.sonelle/narration-spike/local-engine-catalog.json"),
-            PathBuf::from("../../../.sonelle/narration-spike/local-engine-catalog.json"),
-        ]
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .expect("local Kokoro engine catalog should exist");
+        let catalog = local_engine_catalog();
         let catalog_json = fs::read_to_string(catalog).expect("catalog should read");
         let pack = super::engine_pack_from_catalog_json("kokoro", &catalog_json)
             .expect("Kokoro pack should load");
@@ -449,11 +566,43 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "installs the local Supertonic runtime pack and renders with the real ONNX models"]
+    fn installs_local_supertonic_catalog_and_renders_from_the_installed_pack() {
+        let catalog_json = fs::read_to_string(local_engine_catalog()).expect("catalog should read");
+        let pack = super::engine_pack_from_catalog_json("supertonic", &catalog_json)
+            .expect("Supertonic pack should load");
+        let root = test_root("supertonic-local-pack-smoke");
+        let mut progress = Vec::new();
+
+        install_narration_pack(
+            &root,
+            &pack,
+            &NativeEngineDownloadClient,
+            &mut |done, total| progress.push((done, total)),
+        )
+        .expect("local Supertonic pack should install");
+        let destination = root.join(&pack.id).join(&pack.revision);
+        assert!(installed_pack_is_ready(&destination, &pack));
+        let total_bytes = super::pack_size_bytes(&pack);
+        assert_eq!(progress.last(), Some(&(total_bytes, total_bytes)));
+
+        let rendered = render_supertonic_manifest(&destination, &supertonic_request())
+            .expect("installed Supertonic pack should render");
+
+        assert_eq!(rendered.sample_rate, 44_100);
+        assert!(rendered.sample_count > 1_000);
+        assert_eq!(rendered.sentences.len(), 1);
+        assert_eq!(&rendered.wav[..4], b"RIFF");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn reports_engine_status_from_installed_pack_records() {
         let root = test_root("engine-status");
         let missing = engine_status_at(&root, "kokoro").expect("status should load");
 
         assert_eq!(missing.status, "not-installed");
+        assert!(!missing.model_revision.is_empty());
         assert!(missing.download_size_bytes > 300_000_000);
         assert!(!engine_is_ready_at(&root, "kokoro").expect("readiness should load"));
     }
@@ -487,6 +636,40 @@ mod tests {
             source_text_digest: "digest".to_string(),
             synthesis_parameters: BTreeMap::new(),
         }
+    }
+
+    fn supertonic_request() -> ManifestNarrationRequest {
+        ManifestNarrationRequest {
+            request_id: "request-2".to_string(),
+            passage: ManifestNarrationPassage {
+                id: "passage-2".to_string(),
+                book_id: "book-2".to_string(),
+                chapter_id: "chapter-2".to_string(),
+                paragraph_id: "paragraph-2".to_string(),
+                language: Some("fr".to_string()),
+                sentences: vec![ManifestNarrationSentence {
+                    id: "sentence-2".to_string(),
+                    index: 0,
+                    text: "Sonelle garde la narration alignée avec le texte.".to_string(),
+                }],
+            },
+            engine_id: "supertonic".to_string(),
+            model_revision: "supertonic-local".to_string(),
+            voice_id: "supertonic:F1".to_string(),
+            source_text_digest: "digest".to_string(),
+            synthesis_parameters: BTreeMap::new(),
+        }
+    }
+
+    fn local_engine_catalog() -> PathBuf {
+        [
+            PathBuf::from(".sonelle/narration-spike/local-engine-catalog.json"),
+            PathBuf::from("../../.sonelle/narration-spike/local-engine-catalog.json"),
+            PathBuf::from("../../../.sonelle/narration-spike/local-engine-catalog.json"),
+        ]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .expect("local narration engine catalog should exist")
     }
 
     fn test_root(name: &str) -> PathBuf {

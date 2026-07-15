@@ -1,8 +1,9 @@
 :root {
   --ui-font:
-    "DM Sans Variable", "DM Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
-  --reader-font: "Commit Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    Satoshi, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --reader-font:
+    "SpaceMono Nerd Font Propo", "Space Mono", "SFMono-Regular", Consolas, "Liberation Mono",
+    monospace;
   --paper: #fcf9f8;
   --sidebar: #f6f3f2;
   --surface: #ffffff;
@@ -68,6 +69,7 @@ svg {
   --inspector-rail-width: 320px;
   --library-rail-width: 260px;
   background: var(--paper);
+  font-family: var(--ui-font);
   display: grid;
   grid-template-columns: var(--library-rail-width) minmax(560px, 1fr) var(--inspector-rail-width);
   grid-template-rows: minmax(0, 1fr) 80px;

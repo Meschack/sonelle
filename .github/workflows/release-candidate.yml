@@ -1,22 +1,86 @@
 name: Release Candidate
 
 on:
-  push:
+  workflow_run:
+    workflows:
+      - CI
     branches:
       - dev
-  workflow_dispatch:
+    types:
+      - completed
 
 concurrency:
-  group: release-candidate-${{ github.ref }}
+  group: release-candidate-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  provider-smoke:
+    name: Verify real narration providers
+    runs-on: ubuntu-22.04
+    if: github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Checkout verified revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            gstreamer1.0-plugins-bad \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            pkg-config \
+            python3-venv \
+            xdg-utils
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.7.0 --activate
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache Rust builds
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Cache pinned narration fixtures
+        uses: actions/cache@v5
+        with:
+          path: .sonelle/narration-spike
+          key: narration-provider-smoke-${{ runner.os }}-${{ hashFiles('tools/narration-spike/engines.json', 'scripts/setup-narration-spike.mjs', 'scripts/setup-kokoro-reference.mjs') }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare pinned provider fixtures
+        run: |
+          pnpm spike:narration:models
+          node scripts/setup-kokoro-reference.mjs --export-onnx --native-fixture --local-engine-catalog
+
+      - name: Run real provider smoke tests
+        run: pnpm qa:narration-providers
+
   bundle:
     name: Build ${{ matrix.label }} candidate
     runs-on: ${{ matrix.platform }}
+    needs: provider-smoke
+    if: github.event.workflow_run.conclusion == 'success' && needs.provider-smoke.result == 'success'
 
     strategy:
       fail-fast: false
@@ -35,6 +99,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-24.04'
@@ -84,6 +150,6 @@ jobs:
       - name: Upload candidate bundles
         uses: actions/upload-artifact@v7
         with:
-          name: sonelle-candidate-${{ matrix.label }}-${{ github.sha }}
+          name: sonelle-candidate-${{ matrix.label }}-${{ github.event.workflow_run.head_sha }}
           if-no-files-found: error
           path: target/**/release/bundle/**/*

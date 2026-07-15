@@ -25,15 +25,18 @@
     "spike:narration:kokoro-reference": "node scripts/setup-kokoro-reference.mjs",
     "spike:narration:kokoro-export": "node scripts/setup-kokoro-reference.mjs --export-onnx",
     "spike:narration:kokoro-corpus": "node scripts/setup-kokoro-reference.mjs --corpus",
-    "spike:narration:kokoro-local-catalog": "node scripts/setup-kokoro-reference.mjs --local-engine-catalog",
+    "spike:narration:local-catalog": "node scripts/setup-kokoro-reference.mjs --local-engine-catalog",
     "spike:narration:native-lifecycle": "node scripts/run-narration-native-spike.mjs",
+    "qa:narration-providers": "node scripts/run-narration-provider-smoke.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm format",
     "format": "prettier --check .",
     "format:write": "prettier --write ."
   },
   "devDependencies": {
     "prettier": "^3.7.4",
+    "solid-js": "^1.9.14",
     "typescript": "^6.0.3",
+    "vite-plugin-solid": "^2.11.12",
     "vitest": "^4.1.10"
   }
 }

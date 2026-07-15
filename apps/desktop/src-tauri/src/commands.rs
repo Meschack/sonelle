@@ -1,29 +1,37 @@
 use tauri::{AppHandle, Manager};
 
 use crate::audio::{
-    audio_cache_summary, clear_audio_cache, prepare_narration, speak_prepared_narration,
-    stop_narration, AudioCacheStats, PreparedSentenceAudio, SentenceAudioRequest,
+    audio_cache_summary_for_book, clear_audio_cache_for_book, prepare_narration,
+    speak_prepared_narration, stop_narration, AudioCacheStats, PreparedSentenceAudio,
+    SentenceAudioRequest,
 };
-use crate::epub_import::import_epub_file;
+use crate::library_import::prepare_epub_import;
 use crate::narration_engine_pack::{
     engine_status, install_engine, NarrationEngineInstallationStatus,
 };
 use crate::narration_manifest::{
-    prepare_manifest_narration as prepare_manifest_narration_asset, ManifestNarrationRequest,
-    PreparedManifestNarration,
+    cancel_manifest_narration as cancel_manifest_narration_request, clear_manifest_cache,
+    manifest_cache_summary, prepare_manifest_narration as prepare_manifest_narration_asset,
+    ManifestNarrationRequest, PreparedManifestNarration,
 };
+
+#[tauri::command]
+pub fn cancel_manifest_narration(request_id: String) {
+    cancel_manifest_narration_request(request_id);
+}
 use crate::storage::{
     BookExportView, BookmarkView, LibraryBookView, LibrarySearchRequest, LibrarySearchResultView,
     ReaderDocumentView, RecordDomainEventRequest, SaveBookmarkRequest, SaveReadingPositionRequest,
     SonelleStore,
 };
+use crate::system_fonts::list_system_font_families;
 use crate::voice_installation::{install_voice, voice_status, NarrationVoiceInstallationStatus};
 
 #[tauri::command]
 pub async fn import_epub(app: AppHandle, path: String) -> Result<ReaderDocumentView, String> {
     let store = managed_store(&app);
     run_blocking(move || {
-        let imported = import_epub_file(path.as_ref()).map_err(|error| error.to_string())?;
+        let imported = prepare_epub_import(path.as_ref()).map_err(|error| error.to_string())?;
         store.save_imported_book(imported)
     })
     .await
@@ -107,13 +115,33 @@ pub async fn install_narration_engine(
 }
 
 #[tauri::command]
-pub async fn get_audio_cache_stats(app: AppHandle) -> Result<AudioCacheStats, String> {
-    run_blocking(move || audio_cache_summary(&app)).await
+pub async fn get_audio_cache_stats(
+    app: AppHandle,
+    book_id: String,
+) -> Result<AudioCacheStats, String> {
+    run_blocking(move || book_audio_cache_summary(&app, &book_id)).await
 }
 
 #[tauri::command]
-pub async fn clear_prepared_audio_cache(app: AppHandle) -> Result<AudioCacheStats, String> {
-    run_blocking(move || clear_audio_cache(&app)).await
+pub async fn clear_prepared_audio_cache(
+    app: AppHandle,
+    book_id: String,
+) -> Result<AudioCacheStats, String> {
+    run_blocking(move || {
+        clear_audio_cache_for_book(&app, &book_id)?;
+        clear_manifest_cache(&app, &book_id)?;
+        book_audio_cache_summary(&app, &book_id)
+    })
+    .await
+}
+
+fn book_audio_cache_summary(app: &AppHandle, book_id: &str) -> Result<AudioCacheStats, String> {
+    let legacy = audio_cache_summary_for_book(app, book_id)?;
+    let manifest = manifest_cache_summary(app, book_id)?;
+    Ok(AudioCacheStats {
+        sentence_count: legacy.sentence_count + manifest.covered_sentence_count,
+        size_bytes: legacy.size_bytes + manifest.size_bytes,
+    })
 }
 
 #[tauri::command]
@@ -180,6 +208,11 @@ pub async fn search_library(
 pub async fn export_book_data(app: AppHandle, book_id: String) -> Result<BookExportView, String> {
     let store = managed_store(&app);
     run_blocking(move || store.export_book_data(&book_id)).await
+}
+
+#[tauri::command]
+pub async fn list_system_fonts() -> Result<Vec<String>, String> {
+    run_blocking(list_system_font_families).await
 }
 
 fn managed_store(app: &AppHandle) -> SonelleStore {

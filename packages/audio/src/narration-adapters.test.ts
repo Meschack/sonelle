@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_NARRATION_VOICE_ID } from "./index";
+import type {
+  NarrationPreparationAdapter,
+  NarrationPreparationRequest,
+  PreparedNarration
+} from "./narration-api";
 import {
   FakeNarrationGateway,
-  DEFAULT_NARRATION_VOICE_ID,
-  type NarrationPreparationAdapter,
-  type NarrationPreparationRequest,
-  type PreparedNarration
-} from "./index";
-import { FakePassageNarrationAdapter, FakeSentenceBatchNarrationAdapter } from "./narration-fakes";
+  FakePassageNarrationAdapter,
+  FakeSentenceBatchNarrationAdapter
+} from "./narration-fakes";
 import { createNarrationAssetIdentity } from "./narration-identity";
 import {
   createLatestNarrationPreparation,

@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted for the hybrid development path. Production pack hosting and listening QA remain pending.
+Accepted for the primary English narration path. Hosted pack availability and listening QA remain
+release evidence rather than architectural blockers.
 
 ## Context
 
@@ -19,7 +20,8 @@ Sonelle adds a native `kokoro_manifest` module that owns Kokoro manifest renderi
 - phonemizing Sonelle sentence text through `kokoro_text`;
 - preparing Kokoro model input through `kokoro_narration`;
 - running the duration-preserving Kokoro ONNX model;
-- projecting duration output into Sonelle sentence spans;
+- reusing one serialized ONNX session per installed model instead of loading a model per sentence;
+- concatenating independently rendered sentences into exact Sonelle sentence spans;
 - encoding the rendered waveform as PCM WAV.
 
 The module refuses to own:
@@ -34,10 +36,13 @@ The app-level manifest command now calls the Kokoro renderer when a Kokoro pack 
 direct cache helper still rejects Kokoro without supplied rendered audio so tests cannot accidentally
 fall back to silent English passages.
 
+Phonemization or inference failure fails the passage. It is never replaced with silence, because a
+silent success would become a durable cache entry that skips book text on every later playback.
+
 ## Events
 
-No domain event is introduced by this slice. Rendering remains a consequence of future
-`AudioPreparationRequested` handling.
+No provider-specific event is introduced. Rendering runs behind the shared
+`NarrationPreparationStarted`, `PassageNarrationReady`, and playback lifecycle.
 
 ## Testing
 

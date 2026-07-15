@@ -1,4 +1,4 @@
-import type { BookExportDataDto, LibraryBookmarkDto } from "../library/book-repository";
+import type { BookExportDataDto, LibraryBookmarkDto } from "../library/library-contracts";
 import type { ReaderView } from "./reader-view";
 
 export function createSampleExport(

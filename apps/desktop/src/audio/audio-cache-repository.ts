@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { isTauriRuntime } from "../platform/tauri-runtime";
 
 export interface AudioCacheStatsDto {
   sentenceCount: number;
@@ -6,8 +7,8 @@ export interface AudioCacheStatsDto {
 }
 
 export interface AudioCacheRepository {
-  getStats(): Promise<AudioCacheStatsDto>;
-  clear(): Promise<AudioCacheStatsDto>;
+  getStats(bookId: string): Promise<AudioCacheStatsDto>;
+  clear(bookId: string): Promise<AudioCacheStatsDto>;
 }
 
 export function createAudioCacheRepository(): AudioCacheRepository {
@@ -20,25 +21,21 @@ const emptyStats: AudioCacheStatsDto = {
 };
 
 const nativeAudioCacheRepository: AudioCacheRepository = {
-  getStats() {
-    return invoke<AudioCacheStatsDto>("get_audio_cache_stats");
+  getStats(bookId) {
+    return invoke<AudioCacheStatsDto>("get_audio_cache_stats", { bookId });
   },
 
-  clear() {
-    return invoke<AudioCacheStatsDto>("clear_prepared_audio_cache");
+  clear(bookId) {
+    return invoke<AudioCacheStatsDto>("clear_prepared_audio_cache", { bookId });
   }
 };
 
 const browserAudioCacheRepository: AudioCacheRepository = {
-  async getStats() {
+  async getStats(_bookId) {
     return emptyStats;
   },
 
-  async clear() {
+  async clear(_bookId) {
     return emptyStats;
   }
 };
-
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-}

@@ -19,10 +19,17 @@
 
 ## Domain Events
 
-Library workflows complete their core operation and dispatch the resulting event. Registered
-listeners independently update projections, open books, show notices, perform word lookup, and
-prepare narration. Renderer-only events use an `EventSink` persistence listener; native library
-mutations record their durable event inside the storage transaction.
+Library workflows complete their core operation and dispatch the resulting event. `ReaderOpened`
+and `ReaderClosed` independently drive playback, surfaces, rails, bookmark refresh, and persistence.
+Settings, lookup, installation, export, cache clearing, and narration reactions follow the same
+pattern. Events on the domain transient allowlist remain live projections; other renderer events use
+an `EventSink`, while native library mutations record durable facts inside their storage transaction.
+
+## Invariants
+
+- initiating workflows publish facts; independent listeners own follow-up reactions
+- UI modules depend on product-facing application views, not platform or narration-provider types
+- closing the reader stops its playback scope before the library surface becomes active
 
 ## Tests
 

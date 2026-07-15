@@ -1,4 +1,4 @@
-import { createDomainEvent, type AnyDomainEvent, type EntityId } from "@sonelle/domain";
+import { createDomainEvent, type DomainEventDispatcher, type EntityId } from "@sonelle/domain";
 import type {
   NarrationChapterOutline,
   NarrationEngineId,
@@ -7,8 +7,9 @@ import type {
   NarrationPreparationRequest,
   PreparedNarration
 } from "./narration-contracts";
+import { assertPreparedNarration } from "./narration-manifest";
+import { digestNarrationPassageText } from "./narration-identity";
 import { createNarrationPassages, type NarrationPassageOptions } from "./narration-outline";
-import { createLatestNarrationPreparation } from "./narration-preparation";
 import type { ManifestAwareNarrationPlayer, NarrationOutputSettings } from "./narration-player";
 
 export interface NarrationSessionChapter {
@@ -22,7 +23,7 @@ export interface NarrationSessionChapter {
 export interface NarrationSession {
   open(chapter: NarrationSessionChapter): void;
   play(sentenceId: EntityId): Promise<void>;
-  pause(): void;
+  pause(): Promise<void>;
   moveTo(sentenceId: EntityId): Promise<void>;
   setOutput(settings: NarrationOutputSettings & { autoAdvance: boolean }): void;
   close(): void;
@@ -31,7 +32,9 @@ export interface NarrationSession {
 export interface NarrationSessionOptions {
   adapter: NarrationPreparationAdapter;
   player: ManifestAwareNarrationPlayer;
-  onEvent(event: AnyDomainEvent): void;
+  eventDispatcher: Pick<DomainEventDispatcher, "dispatch">;
+  onEventError?(error: unknown): void;
+  onError?(error: unknown): void;
   createRequestId?: () => EntityId;
 }
 
@@ -45,23 +48,47 @@ interface ActivePlayback {
   sentenceId: EntityId;
 }
 
+const defaultPrefetchLookaheadPassages = 3;
+const heavyEnginePrefetchLookaheadPassages = 2;
+
 export function createNarrationSession(options: NarrationSessionOptions): NarrationSession {
-  const foregroundPreparation = createLatestNarrationPreparation(options.adapter);
-  const prefetchPreparation = createLatestNarrationPreparation(options.adapter);
   const createRequestId = options.createRequestId ?? (() => crypto.randomUUID());
   let chapter: OpenChapter | null = null;
   let output = { playbackRate: 1, volume: 1, autoAdvance: true };
   let active: ActivePlayback | null = null;
   let generation = 0;
+  let preparedPassages = new Map<EntityId, Promise<PreparedNarration>>();
+  let preparationControllers = new Set<AbortController>();
 
   const closeActive = () => {
     generation += 1;
-    foregroundPreparation.cancel();
-    prefetchPreparation.cancel();
+    for (const controller of preparationControllers) {
+      controller.abort(new StaleNarrationSessionPreparationError());
+    }
+    preparationControllers = new Set();
+    preparedPassages = new Map();
     options.player.stop();
   };
 
-  const dispatch = (event: AnyDomainEvent) => options.onEvent(event);
+  const publish = async (event: Parameters<DomainEventDispatcher["dispatch"]>[0]) => {
+    try {
+      await options.eventDispatcher.dispatch(event);
+    } catch (error) {
+      try {
+        options.onEventError?.(error);
+      } catch {
+        // Event diagnostics must never become playback control flow.
+      }
+    }
+  };
+
+  const reportError = (error: unknown) => {
+    try {
+      options.onError?.(error);
+    } catch {
+      // Diagnostics are observers, never narration control flow.
+    }
+  };
 
   const startAt = async (sentenceId: EntityId): Promise<void> => {
     const currentChapter = requireOpenChapter(chapter);
@@ -69,14 +96,24 @@ export function createNarrationSession(options: NarrationSessionOptions): Narrat
     if (passage == null) throw new Error("Sentence does not belong to the open narration chapter.");
 
     const run = ++generation;
-    const request = createPreparationRequest(currentChapter, passage, createRequestId());
+    const preparedPassage = preparePassage(currentChapter, passage);
+    await publish(
+      createDomainEvent("NarrationPreparationStarted", {
+        bookId: passage.bookId,
+        chapterId: passage.chapterId,
+        passageId: passage.id,
+        sentenceId
+      })
+    );
+    prefetchUpcomingPassages(currentChapter, passage);
     let prepared: PreparedNarration;
 
     try {
-      prepared = await foregroundPreparation.prepare(request);
+      prepared = await preparedPassage;
     } catch (error) {
       if (run !== generation) return;
-      dispatch(
+      reportError(error);
+      await publish(
         createDomainEvent("NarrationPlaybackFailed", {
           bookId: currentChapter.outline.bookId,
           chapterId: currentChapter.outline.chapterId,
@@ -93,7 +130,7 @@ export function createNarrationSession(options: NarrationSessionOptions): Narrat
     const lastSentenceId = passage.sentences[passage.sentences.length - 1]?.id;
     if (firstSentenceId == null || lastSentenceId == null) return;
 
-    dispatch(
+    await publish(
       createDomainEvent("PassageNarrationReady", {
         bookId: passage.bookId,
         chapterId: passage.chapterId,
@@ -106,8 +143,9 @@ export function createNarrationSession(options: NarrationSessionOptions): Narrat
       })
     );
 
-    prefetchNextPassage(currentChapter, passage);
+    prefetchUpcomingPassages(currentChapter, passage);
 
+    let pendingSentenceEvents = Promise.resolve();
     try {
       await options.player.play(
         {
@@ -119,20 +157,24 @@ export function createNarrationSession(options: NarrationSessionOptions): Narrat
           sentenceEntered(nextSentenceId) {
             if (run !== generation) return;
             active = { passageId: passage.id, sentenceId: nextSentenceId };
-            dispatch(
-              createDomainEvent("NarrationSentenceEntered", {
-                bookId: passage.bookId,
-                chapterId: passage.chapterId,
-                passageId: passage.id,
-                sentenceId: nextSentenceId
-              })
+            pendingSentenceEvents = pendingSentenceEvents.then(() =>
+              publish(
+                createDomainEvent("NarrationSentenceEntered", {
+                  bookId: passage.bookId,
+                  chapterId: passage.chapterId,
+                  passageId: passage.id,
+                  sentenceId: nextSentenceId
+                })
+              )
             );
           }
         }
       );
+      await pendingSentenceEvents;
     } catch (error) {
       if (run !== generation) return;
-      dispatch(
+      reportError(error);
+      await publish(
         createDomainEvent("NarrationPlaybackFailed", {
           bookId: passage.bookId,
           chapterId: passage.chapterId,
@@ -145,8 +187,20 @@ export function createNarrationSession(options: NarrationSessionOptions): Narrat
     }
 
     if (run !== generation) return;
+    await publish(
+      createDomainEvent("PassageNarrationPlaybackEnded", {
+        bookId: passage.bookId,
+        chapterId: passage.chapterId,
+        passageId: passage.id,
+        lastSentenceId
+      })
+    );
     if (!output.autoAdvance) {
-      dispatchPaused(currentChapter, active ?? { passageId: passage.id, sentenceId }, dispatch);
+      await dispatchPaused(
+        currentChapter,
+        active ?? { passageId: passage.id, sentenceId },
+        publish
+      );
       return;
     }
 
@@ -157,7 +211,7 @@ export function createNarrationSession(options: NarrationSessionOptions): Narrat
     }
 
     active = { passageId: passage.id, sentenceId: lastSentenceId };
-    dispatch(
+    await publish(
       createDomainEvent("NarrationPlaybackEnded", {
         bookId: passage.bookId,
         chapterId: passage.chapterId,
@@ -183,12 +237,12 @@ export function createNarrationSession(options: NarrationSessionOptions): Narrat
       return startAt(sentenceId);
     },
 
-    pause() {
+    async pause() {
       const currentChapter = chapter;
       const paused = active;
       closeActive();
       if (currentChapter != null && paused != null)
-        dispatchPaused(currentChapter, paused, dispatch);
+        await dispatchPaused(currentChapter, paused, publish);
     },
 
     moveTo(sentenceId) {
@@ -215,28 +269,68 @@ export function createNarrationSession(options: NarrationSessionOptions): Narrat
     }
   };
 
-  function prefetchNextPassage(currentChapter: OpenChapter, passage: NarrationPassage) {
-    const index = currentChapter.passages.findIndex((candidate) => candidate.id === passage.id);
-    const nextPassage = currentChapter.passages[index + 1];
-    if (nextPassage == null) return;
+  function preparePassage(
+    currentChapter: OpenChapter,
+    passage: NarrationPassage
+  ): Promise<PreparedNarration> {
+    const existing = preparedPassages.get(passage.id);
+    if (existing != null) return existing;
 
-    void prefetchPreparation
-      .prepare(createPreparationRequest(currentChapter, nextPassage, createRequestId()))
-      .catch(() => {
+    const controller = new AbortController();
+    preparationControllers.add(controller);
+    const request = createPreparationRequest(currentChapter, passage, createRequestId());
+    const prepared = options.adapter
+      .prepare(request, controller.signal)
+      .then((narration) => assertPreparedNarration(narration, request.passage.sentences))
+      .catch((error) => {
+        preparedPassages.delete(passage.id);
+        throw error;
+      })
+      .finally(() => {
+        preparationControllers.delete(controller);
+      });
+    preparedPassages.set(passage.id, prepared);
+    return prepared;
+  }
+
+  function prefetchUpcomingPassages(currentChapter: OpenChapter, passage: NarrationPassage) {
+    const index = currentChapter.passages.findIndex((candidate) => candidate.id === passage.id);
+    if (index < 0) return;
+
+    const nextPassages = currentChapter.passages.slice(
+      index + 1,
+      index + 1 + prefetchLookaheadForEngine(currentChapter.engineId)
+    );
+    for (const nextPassage of nextPassages) {
+      void preparePassage(currentChapter, nextPassage).catch(() => {
         // Prefetch is best-effort; foreground playback will surface any real error.
       });
+    }
+  }
+}
+
+function prefetchLookaheadForEngine(engineId: NarrationEngineId): number {
+  return engineId === "supertonic"
+    ? heavyEnginePrefetchLookaheadPassages
+    : defaultPrefetchLookaheadPassages;
+}
+
+class StaleNarrationSessionPreparationError extends Error {
+  constructor() {
+    super("Narration preparation was superseded by a newer request.");
+    this.name = "StaleNarrationSessionPreparationError";
   }
 }
 
 function dispatchPaused(
   chapter: OpenChapter,
   active: ActivePlayback,
-  dispatch: (event: AnyDomainEvent) => void
-) {
+  publish: (event: Parameters<DomainEventDispatcher["dispatch"]>[0]) => Promise<void>
+): Promise<void> {
   const passage = chapter.passages.find((candidate) => candidate.id === active.passageId);
-  if (passage == null) return;
+  if (passage == null) return Promise.resolve();
 
-  dispatch(
+  return publish(
     createDomainEvent("NarrationPlaybackPaused", {
       bookId: passage.bookId,
       chapterId: passage.chapterId,
@@ -257,7 +351,7 @@ function createPreparationRequest(
     engineId: chapter.engineId,
     modelRevision: chapter.modelRevision,
     voiceId: chapter.voiceId,
-    sourceTextDigest: digestPassageText(passage)
+    sourceTextDigest: digestNarrationPassageText(passage)
   };
 }
 
@@ -285,18 +379,7 @@ function requireOpenChapter(chapter: OpenChapter | null): OpenChapter {
   return chapter;
 }
 
-function digestPassageText(passage: NarrationPassage): string {
-  let hash = 2_166_136_261;
-  for (const sentence of passage.sentences) {
-    const value = `${sentence.id}\n${sentence.text}\n`;
-    for (let index = 0; index < value.length; index += 1) {
-      hash ^= value.charCodeAt(index);
-      hash = Math.imul(hash, 16_777_619);
-    }
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
 function friendlyNarrationSessionError(error: unknown): string {
-  return error instanceof Error ? error.message : "Narration needs attention.";
+  void error;
+  return "Narration needs attention. Please try again.";
 }

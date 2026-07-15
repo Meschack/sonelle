@@ -134,6 +134,52 @@ describe("HTML manifest narration player", () => {
       durationSeconds: 1
     });
   });
+
+  it("reschedules sentence entries when playback speed changes", async () => {
+    vi.useFakeTimers();
+    const playback = deferred<void>();
+    const htmlAudioPlayer: HtmlAudioPlayer = {
+      play: vi.fn().mockReturnValue(playback.promise),
+      setPlaybackRate: vi.fn(),
+      setVolume: vi.fn(),
+      stop: vi.fn()
+    };
+    const player = createHtmlManifestNarrationPlayer(htmlAudioPlayer);
+    const sentenceEntered = vi.fn();
+    const playing = player.play(
+      {
+        narration: {
+          assetId: "asset-1",
+          sourceUrl: "asset://passage",
+          sampleRate: 1_000,
+          sampleCount: 2_000,
+          sentences: [
+            { sentenceId: "s1", startSample: 0, endSample: 1_000 },
+            { sentenceId: "s2", startSample: 1_000, endSample: 2_000 }
+          ],
+          cached: false,
+          engineId: "kokoro",
+          modelRevision: "kokoro",
+          voiceId: "en",
+          sourceTextDigest: "digest"
+        },
+        startSentenceId: "s1",
+        stopAfterSentenceId: "s2"
+      },
+      { sentenceEntered }
+    );
+
+    await vi.advanceTimersByTimeAsync(250);
+    player.setOutput({ playbackRate: 2, volume: 1 });
+    await vi.advanceTimersByTimeAsync(374);
+    expect(sentenceEntered).not.toHaveBeenCalledWith("s2");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sentenceEntered).toHaveBeenCalledWith("s2");
+
+    playback.resolve();
+    await playing;
+    vi.useRealTimers();
+  });
 });
 
 function deferred<T>() {

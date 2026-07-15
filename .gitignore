@@ -13,3 +13,4 @@ __pycache__/
 .sonelle/
 apps/desktop/src-tauri/resources/windows-runtime/*.dll
 marketing/sonelle-promo-video/
+output/

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveDroppedEpubPath } from "./book-repository";
+import { resolveDroppedEpubPath } from "./book-drop-adapter";
 
 describe("dropped EPUB paths", () => {
   it("accepts an EPUB path regardless of case and ignores other files", () => {
