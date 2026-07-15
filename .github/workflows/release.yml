@@ -1,7 +1,6 @@
 name: Release
 
 on:
-  workflow_dispatch:
   workflow_run:
     workflows:
       - CI
@@ -11,7 +10,7 @@ on:
       - completed
 
 concurrency:
-  group: release-${{ github.event.workflow_run.head_branch || github.ref }}
+  group: release-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
 permissions:
@@ -21,7 +20,7 @@ jobs:
   build:
     name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.platform }}
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event.workflow_run.conclusion == 'success'
 
     strategy:
       fail-fast: false
@@ -30,11 +29,8 @@ jobs:
           - label: macOS Apple Silicon
             platform: macos-latest
             args: --target aarch64-apple-darwin
-          - label: macOS Intel
-            platform: macos-latest
-            args: --target x86_64-apple-darwin
           - label: Linux x64
-            platform: ubuntu-22.04
+            platform: ubuntu-24.04
             args: ""
           - label: Windows x64
             platform: windows-latest
@@ -45,13 +41,13 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Fetch release tags
         run: git fetch --force --tags
 
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -77,7 +73,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.95.0
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
 
       - name: Cache Rust builds
         uses: swatinem/rust-cache@v2
@@ -94,33 +90,7 @@ jobs:
       - name: Stage Windows voice runtime libraries
         if: matrix.platform == 'windows-latest'
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $visualStudio = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if ([string]::IsNullOrWhiteSpace($visualStudio)) {
-            throw "Visual Studio with the x64 C++ tools was not found."
-          }
-
-          $requiredFiles = @("msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll")
-          $redistRoot = Join-Path $visualStudio "VC\Redist\MSVC"
-          $crt = Get-ChildItem $redistRoot -Directory -Recurse -Filter "Microsoft.VC*.CRT" |
-            Where-Object { $_.Parent.Name -eq "x64" } |
-            Where-Object {
-              $candidate = $_.FullName
-              ($requiredFiles | ForEach-Object { Test-Path (Join-Path $candidate $_) }) -notcontains $false
-            } |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
-          if ($null -eq $crt) {
-            throw "A complete x64 Visual C++ runtime was not found beneath $redistRoot."
-          }
-
-          $destination = "apps\desktop\src-tauri\resources\windows-runtime"
-          New-Item -ItemType Directory -Force -Path $destination | Out-Null
-          foreach ($file in $requiredFiles) {
-            Copy-Item (Join-Path $crt.FullName $file) $destination
-          }
+        run: ./scripts/stage-windows-voice-runtime.ps1
 
       - name: Build and upload bundles
         uses: tauri-apps/tauri-action@v1
@@ -132,7 +102,7 @@ jobs:
           tagName: ${{ steps.version.outputs.tag }}
           releaseName: ${{ steps.version.outputs.release_name }}
           releaseBody: |
-            Automated Sonelle desktop release from ${{ github.event.workflow_run.head_sha || github.sha }}.
+            Automated Sonelle desktop release from ${{ github.event.workflow_run.head_sha }}.
 
             Assets include platform bundles for Linux, macOS, and Windows.
             macOS builds use ad-hoc signing until a Developer ID certificate is configured.

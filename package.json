@@ -19,13 +19,24 @@
     "check:native": "cargo check",
     "qa:real-books": "cargo test real_book_qa_imports_configured_epubs_through_storage_workflow -- --ignored --nocapture",
     "perf:large-books": "cargo test large_book_performance_harness_reports_reader_timings -- --ignored --nocapture",
+    "spike:narration:setup": "node scripts/setup-narration-spike.mjs",
+    "spike:narration:models": "node scripts/setup-narration-spike.mjs --models",
+    "spike:narration:verify": "node scripts/setup-narration-spike.mjs --models --verify-only",
+    "spike:narration:kokoro-reference": "node scripts/setup-kokoro-reference.mjs",
+    "spike:narration:kokoro-export": "node scripts/setup-kokoro-reference.mjs --export-onnx",
+    "spike:narration:kokoro-corpus": "node scripts/setup-kokoro-reference.mjs --corpus",
+    "spike:narration:local-catalog": "node scripts/setup-kokoro-reference.mjs --local-engine-catalog",
+    "spike:narration:native-lifecycle": "node scripts/run-narration-native-spike.mjs",
+    "qa:narration-providers": "node scripts/run-narration-provider-smoke.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm format",
     "format": "prettier --check .",
     "format:write": "prettier --write ."
   },
   "devDependencies": {
     "prettier": "^3.7.4",
+    "solid-js": "^1.9.14",
     "typescript": "^6.0.3",
+    "vite-plugin-solid": "^2.11.12",
     "vitest": "^4.1.10"
   }
 }

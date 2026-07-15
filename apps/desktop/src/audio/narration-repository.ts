@@ -1,21 +1,31 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { isTauriRuntime } from "../platform/tauri-runtime";
 import {
-  FakeNarrationGateway,
   type NarrationGateway,
   type NarrationPlaybackMode,
   type SentenceNarration
-} from "@sonelle/audio";
+} from "@sonelle/audio/compatibility";
 
 interface NarrationDevelopmentErrorContext {
   stage: "prepare" | "playback" | "prefetch" | "stop";
   sentenceId: string;
   voiceId: string;
-  playbackMode?: NarrationPlaybackMode | null;
+  playbackMode?: NarrationPlaybackMode | "manifest" | null;
 }
 
 export function createNarrationRepository(): NarrationGateway {
-  return isTauriRuntime() ? nativeNarrationRepository : new FakeNarrationGateway();
+  return isTauriRuntime() ? nativeNarrationRepository : unavailableNarrationRepository;
 }
+
+const unavailableNarrationRepository: NarrationGateway = {
+  async prepareSentenceAudio() {
+    throw new Error("Narration is available in the desktop app.");
+  },
+  async playPreparedSentenceAudio() {
+    throw new Error("Narration is available in the desktop app.");
+  },
+  async stopPreparedSentenceAudio() {}
+};
 
 const nativeNarrationRepository: NarrationGateway = {
   async prepareSentenceAudio(request) {
@@ -38,8 +48,17 @@ const nativeNarrationRepository: NarrationGateway = {
 };
 
 export function toFriendlyNarrationError(error: unknown): string {
-  if (typeof error === "string" && error.trim().length > 0) return error;
-  if (error instanceof Error && error.message.trim().length > 0) return error.message;
+  const message = diagnosticErrorMessage(error).toLocaleLowerCase();
+  if (message.includes("download") || message.includes("network")) {
+    return "We couldn't download narration files. Check your connection and try again.";
+  }
+  if (message.includes("catalog") || message.includes("verify")) {
+    return "We couldn't verify the offline narration files. Please try again.";
+  }
+  if (message.includes("files changed")) {
+    return "Narration files changed. Please try again.";
+  }
+  if (message.includes("cancel")) return "Narration preparation was cancelled.";
 
   return "Narration needs attention. Please try again.";
 }
@@ -50,7 +69,7 @@ export function reportNarrationDevelopmentError(
 ) {
   if (!import.meta.env.DEV) return;
 
-  const message = toFriendlyNarrationError(error);
+  const message = diagnosticErrorMessage(error);
   const detail = [
     `stage=${context.stage}`,
     `sentenceId=${context.sentenceId}`,
@@ -70,6 +89,8 @@ export function reportNarrationDevelopmentError(
   });
 }
 
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+function diagnosticErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim().length > 0) return error;
+  if (error instanceof Error && error.message.trim().length > 0) return error.message;
+  return "Unknown narration error";
 }

@@ -1,19 +1,32 @@
 import { describe, expect, it } from "vitest";
+import * as audioPublicApi from "./index";
 import {
+  activateAudioSettingsForLanguage,
+  activateHybridAudioSettingsForLanguage,
   createAudioSettings,
-  createPrefetchingNarrationGateway,
+  DEFAULT_AUDIO_SETTINGS,
   DEFAULT_NARRATION_VOICE_ID,
-  FakeNarrationGateway,
-  estimateSentenceDurationSec,
   parseAudioSettings,
   resolveNarrationVoiceForLanguage,
-  serializeAudioSettings,
+  hybridNarrationVoicesForLanguage,
+  selectNarrationVoicePreference,
+  serializeAudioSettings
+} from "./index";
+import {
+  createPrefetchingNarrationGateway,
   type NarrationGateway,
   type SentenceNarration,
   type SentenceNarrationRequest
-} from "./index";
+} from "./narration-compatibility-api";
+import { FakeNarrationGateway } from "./narration-fakes";
 
 describe("sentence narration", () => {
+  it("keeps compatibility and session machinery out of the settings entry point", () => {
+    expect(audioPublicApi).not.toHaveProperty("PiperCompatibilityAdapter");
+    expect(audioPublicApi).not.toHaveProperty("createNarrationSession");
+    expect(audioPublicApi).not.toHaveProperty("FakeManifestNarrationPlayer");
+  });
+
   it("keeps fake narration deterministic and cached for tests", async () => {
     const gateway = new FakeNarrationGateway();
     const request = {
@@ -37,21 +50,19 @@ describe("sentence narration", () => {
     expect(second.sourceUrl).toBe(first.sourceUrl);
   });
 
-  it("estimates sentence duration without exposing timing internals", () => {
-    expect(estimateSentenceDurationSec("One two three.")).toBeGreaterThan(1);
-  });
-
   it("keeps audio settings inside supported playback behavior", () => {
     expect(createAudioSettings({ playbackRate: 8, autoAdvance: false })).toEqual({
       playbackRate: 1.5,
       volume: 1.2,
       voiceId: DEFAULT_NARRATION_VOICE_ID,
+      voicePreferences: { en: DEFAULT_NARRATION_VOICE_ID },
       autoAdvance: false
     });
     expect(parseAudioSettings("{nope")).toEqual({
       playbackRate: 0.9,
       volume: 1.2,
       voiceId: DEFAULT_NARRATION_VOICE_ID,
+      voicePreferences: { en: DEFAULT_NARRATION_VOICE_ID },
       autoAdvance: true
     });
     expect(
@@ -60,6 +71,7 @@ describe("sentence narration", () => {
           playbackRate: 0.9,
           volume: 0.75,
           voiceId: "en_GB-alba-medium",
+          voicePreferences: { en: "en_GB-alba-medium" },
           autoAdvance: false
         })
       )
@@ -67,16 +79,51 @@ describe("sentence narration", () => {
       playbackRate: 0.9,
       volume: 0.75,
       voiceId: "en_GB-alba-medium",
+      voicePreferences: { en: "en_GB-alba-medium" },
       autoAdvance: false
     });
     expect(createAudioSettings({ voiceId: "nope" })).toEqual({
       playbackRate: 0.9,
       volume: 1.2,
       voiceId: DEFAULT_NARRATION_VOICE_ID,
+      voicePreferences: { en: DEFAULT_NARRATION_VOICE_ID },
       autoAdvance: true
     });
     expect(createAudioSettings({ volume: -4 }).volume).toBe(0);
     expect(createAudioSettings({ volume: 8 }).volume).toBe(1.5);
+    expect(parseAudioSettings('{"schemaVersion":99,"autoAdvance":false}')).toEqual(
+      DEFAULT_AUDIO_SETTINGS
+    );
+  });
+
+  it("keeps hybrid narration voice choices in audio settings", () => {
+    const settings = createAudioSettings({
+      voiceId: "kokoro:af-heart",
+      voicePreferences: { en: "kokoro:af-heart", fr: "supertonic:F1" }
+    });
+
+    expect(settings.voiceId).toBe("kokoro:af-heart");
+    expect(settings.voicePreferences).toEqual({
+      en: "kokoro:af-heart",
+      fr: "supertonic:F1"
+    });
+  });
+
+  it("keeps hybrid voice choices compatible with the active book", () => {
+    expect(hybridNarrationVoicesForLanguage("en").map((voice) => voice.id)).toEqual([
+      "kokoro:af-heart",
+      "kokoro:bf-emma"
+    ]);
+    expect(hybridNarrationVoicesForLanguage("fr").map((voice) => voice.id)).toEqual([
+      "supertonic:F1",
+      "supertonic:M1"
+    ]);
+    expect(
+      activateHybridAudioSettingsForLanguage(
+        createAudioSettings({ voiceId: "supertonic:M1" }),
+        "en"
+      ).voiceId
+    ).toBe("kokoro:af-heart");
   });
 
   it("matches the persisted voice to the active book language", () => {
@@ -86,6 +133,36 @@ describe("sentence narration", () => {
     expect(resolveNarrationVoiceForLanguage("en-GB", "en_US-amy-medium")).toBe("en_US-amy-medium");
     expect(resolveNarrationVoiceForLanguage("en", "en_GB-alba-medium")).toBe("en_GB-alba-medium");
     expect(resolveNarrationVoiceForLanguage(null, "fr_FR-siwis-medium")).toBe("fr_FR-siwis-medium");
+  });
+
+  it("migrates the active Piper voice into a language preference", () => {
+    const settings = parseAudioSettings(
+      JSON.stringify({
+        playbackRate: 1,
+        volume: 0.8,
+        voiceId: "fr_FR-siwis-medium",
+        autoAdvance: false
+      })
+    );
+
+    expect(settings.voicePreferences).toEqual({ fr: "fr_FR-siwis-medium" });
+    expect(JSON.parse(serializeAudioSettings(settings))).toMatchObject({
+      schemaVersion: 2,
+      voiceId: "fr_FR-siwis-medium",
+      voicePreferences: { fr: "fr_FR-siwis-medium" }
+    });
+  });
+
+  it("remembers independent voice choices when books change language", () => {
+    const english = selectNarrationVoicePreference(
+      createAudioSettings(),
+      "en-GB",
+      "en_GB-alba-medium"
+    );
+    const french = selectNarrationVoicePreference(english, "fr-FR", "fr_FR-siwis-medium");
+
+    expect(activateAudioSettingsForLanguage(french, "en-US").voiceId).toBe("en_GB-alba-medium");
+    expect(activateAudioSettingsForLanguage(french, "fr").voiceId).toBe("fr_FR-siwis-medium");
   });
 
   it("reuses prefetched narration instead of preparing the same sentence twice", async () => {

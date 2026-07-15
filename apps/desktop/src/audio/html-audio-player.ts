@@ -1,10 +1,15 @@
 import { createPlayableAudioSource, type PlayableAudioSource } from "./playable-audio-source";
 
 export interface HtmlAudioPlayer {
-  play(sourceUrl: string): Promise<void>;
+  play(sourceUrl: string, range?: AudioPlaybackRange): Promise<void>;
   setPlaybackRate(playbackRate: number): void;
   setVolume(volume: number): void;
   stop(): void;
+}
+
+export interface AudioPlaybackRange {
+  offsetSeconds: number;
+  durationSeconds?: number;
 }
 
 export interface AudioPlaybackHandlers {
@@ -15,7 +20,7 @@ export interface AudioPlaybackHandlers {
 export interface AudioPlayback {
   setPlaybackRate(playbackRate: number): void;
   setVolume(volume: number): void;
-  start(handlers: AudioPlaybackHandlers): Promise<void>;
+  start(handlers: AudioPlaybackHandlers, range?: AudioPlaybackRange): Promise<void>;
   stop(): void;
   dispose(): void;
 }
@@ -52,7 +57,7 @@ export function createHtmlAudioPlayer(options: HtmlAudioPlayerOptions = {}): Htm
   };
 
   return {
-    async play(sourceUrl) {
+    async play(sourceUrl, range) {
       stop();
       const playGeneration = generation;
       const playableSource = await resolveSource(sourceUrl);
@@ -99,7 +104,7 @@ export function createHtmlAudioPlayer(options: HtmlAudioPlayerOptions = {}): Htm
         active = { playback, finish };
         playback.setPlaybackRate(playbackRate);
         playback.setVolume(volume);
-        playback.start({ ended: finish, failed: fail }).catch(fail);
+        playback.start({ ended: finish, failed: fail }, range).catch(fail);
 
         if (playGeneration !== generation) {
           playback.stop();
@@ -156,13 +161,18 @@ export function createAudioBufferPlaybackFactory(
       setVolume(volume) {
         if (output != null) output.gain.value = clampVolume(volume);
       },
-      async start(nextHandlers) {
+      async start(nextHandlers, range) {
         handlers = nextHandlers;
         try {
           if (context?.state === "suspended") await context.resume();
           if (stopped || disposed) return;
           started = true;
-          bufferSource.start();
+          if (range?.durationSeconds == null) {
+            bufferSource.start(0, range?.offsetSeconds ?? 0);
+            return;
+          }
+
+          bufferSource.start(0, range.offsetSeconds, range.durationSeconds);
         } catch (error) {
           nextHandlers.failed(error);
         }
@@ -205,25 +215,62 @@ async function fetchAudioData(
 
 function createElementAudioPlayback(sourceUrl: string): AudioPlayback {
   const audio = new Audio(sourceUrl);
+  let stopTimer: ReturnType<typeof setTimeout> | null = null;
+  let stopAtSeconds: number | null = null;
+  let ended: (() => void) | null = null;
+
+  const scheduleStop = () => {
+    if (stopTimer != null) clearTimeout(stopTimer);
+    stopTimer = null;
+    if (stopAtSeconds == null || ended == null) return;
+    const remainingMediaSeconds = Math.max(0, stopAtSeconds - audio.currentTime);
+    stopTimer = setTimeout(
+      () => {
+        stopTimer = null;
+        audio.pause();
+        ended?.();
+      },
+      (remainingMediaSeconds / Math.max(audio.playbackRate, 0.01)) * 1_000
+    );
+  };
 
   return {
     setPlaybackRate(playbackRate) {
       audio.playbackRate = playbackRate;
+      scheduleStop();
     },
     setVolume(volume) {
       audio.volume = Math.min(1, clampVolume(volume));
     },
-    async start(handlers) {
+    async start(handlers, range) {
+      ended = handlers.ended;
       audio.onended = handlers.ended;
       audio.onerror = () => handlers.failed(mediaPlaybackError(audio));
+      if (range != null) {
+        audio.currentTime = range.offsetSeconds;
+        if (range.durationSeconds != null) {
+          stopAtSeconds = range.offsetSeconds + range.durationSeconds;
+          scheduleStop();
+        }
+      }
       await audio.play();
     },
     stop() {
+      if (stopTimer != null) {
+        clearTimeout(stopTimer);
+        stopTimer = null;
+      }
       audio.pause();
+      ended = null;
     },
     dispose() {
+      if (stopTimer != null) {
+        clearTimeout(stopTimer);
+        stopTimer = null;
+      }
       audio.onended = null;
       audio.onerror = null;
+      ended = null;
     }
   };
 }

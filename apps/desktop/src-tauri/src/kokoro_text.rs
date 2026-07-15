@@ -1,0 +1,358 @@
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
+
+use grapheme_to_phoneme::{Model as OovModel, PhonemeToken};
+use misaki_rs::{Language, G2P};
+
+use crate::kokoro_narration::KokoroSentencePhonemes;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KokoroEnglishDialect {
+    American,
+    British,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KokoroTextSentence {
+    pub sentence_id: String,
+    pub text: String,
+}
+
+static OOV_MODEL: OnceLock<Result<OovModel, String>> = OnceLock::new();
+static OOV_PRONUNCIATIONS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+pub fn phonemize_kokoro_english_sentences(
+    sentences: &[KokoroTextSentence],
+    dialect: KokoroEnglishDialect,
+) -> Result<Vec<KokoroSentencePhonemes>, String> {
+    if sentences.is_empty() {
+        return Err("English narration needs at least one sentence.".to_string());
+    }
+
+    let g2p = G2P::new(match dialect {
+        KokoroEnglishDialect::American => Language::EnglishUS,
+        KokoroEnglishDialect::British => Language::EnglishGB,
+    });
+
+    sentences
+        .iter()
+        .map(|sentence| phonemize_sentence(&g2p, sentence))
+        .collect()
+}
+
+fn phonemize_sentence(
+    g2p: &G2P,
+    sentence: &KokoroTextSentence,
+) -> Result<KokoroSentencePhonemes, String> {
+    if sentence.text.trim().is_empty() {
+        return Err("English narration input is invalid.".to_string());
+    }
+
+    let narration_text = join_intra_word_hyphens(&sentence.text);
+    let (_, mut tokens) = g2p
+        .g2p(&narration_text)
+        .map_err(|_| "Sonelle couldn't prepare English narration text.".to_string())?;
+    for token in &mut tokens {
+        improve_token_pronunciation(g2p, token)?;
+    }
+    let phonemes = tokens
+        .iter()
+        .map(|token| token.phonemes.as_deref().unwrap_or("❓").to_string() + &token.whitespace)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if phonemes.is_empty() || phonemes.contains('❓') {
+        return Err("English narration input is invalid.".to_string());
+    }
+
+    Ok(KokoroSentencePhonemes {
+        sentence_id: sentence.sentence_id.clone(),
+        phonemes,
+    })
+}
+
+fn improve_token_pronunciation(g2p: &G2P, token: &mut misaki_rs::MToken) -> Result<(), String> {
+    let word = token
+        .text
+        .trim_matches(|character: char| !character.is_alphabetic());
+    if is_pronounceable_all_caps(word) {
+        let lowercase_phonemes = lowercase_phonemes(g2p, word)
+            .ok_or_else(|| "English narration input is invalid.".to_string())?;
+        token.phonemes = Some(if is_character_spelling(&lowercase_phonemes) {
+            predict_oov_phonemes(word)?
+        } else {
+            lowercase_phonemes
+        });
+    } else if should_predict_pronunciation(token) {
+        token.phonemes = Some(predict_oov_phonemes(&token.text)?);
+    }
+    Ok(())
+}
+
+fn should_predict_pronunciation(token: &misaki_rs::MToken) -> bool {
+    let word = token
+        .text
+        .trim_matches(|character: char| !character.is_alphabetic());
+    if word.chars().count() < 2 || !word.chars().all(char::is_alphabetic) {
+        return false;
+    }
+    token.phonemes.as_deref().is_some_and(is_character_spelling)
+}
+
+fn is_pronounceable_all_caps(word: &str) -> bool {
+    word.chars().count() > 3
+        && word.chars().all(char::is_uppercase)
+        && word.chars().any(|character| "AEIOUY".contains(character))
+}
+
+fn lowercase_phonemes(g2p: &G2P, word: &str) -> Option<String> {
+    let lowercase = word.to_lowercase();
+    g2p.g2p(&lowercase)
+        .ok()
+        .and_then(|(_, tokens)| tokens.into_iter().next())
+        .and_then(|token| token.phonemes)
+        .map(|phonemes| phonemes.trim().to_string())
+}
+
+fn is_character_spelling(phonemes: &str) -> bool {
+    // Misaki appends token whitespace before joining fallback letter pronunciations.
+    phonemes.contains("  ")
+}
+
+fn predict_oov_phonemes(word: &str) -> Result<String, String> {
+    let normalized_word = word.to_lowercase();
+    let pronunciations = OOV_PRONUNCIATIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(phonemes) = pronunciations
+        .lock()
+        .map_err(|_| "Sonelle couldn't open English pronunciation rules.".to_string())?
+        .get(&normalized_word)
+        .cloned()
+    {
+        return Ok(phonemes);
+    }
+
+    let model = OOV_MODEL.get_or_init(|| {
+        OovModel::load_in_memory()
+            .map_err(|_| "Sonelle couldn't load English pronunciation rules.".to_string())
+    });
+    let model = model.as_ref().map_err(Clone::clone)?;
+    let predicted = model
+        .predict_phonemes(&normalized_word)
+        .map_err(|_| "Sonelle couldn't pronounce an English word.".to_string())?;
+    let phonemes = predicted
+        .iter()
+        .filter_map(|token| match token {
+            PhonemeToken::ArpabetPhoneme(_) => Some(arpabet_to_kokoro(token.to_str())),
+            PhonemeToken::Token(_) => None,
+        })
+        .collect::<String>();
+
+    if phonemes.is_empty() {
+        return Err("Sonelle couldn't pronounce an English word.".to_string());
+    }
+    pronunciations
+        .lock()
+        .map_err(|_| "Sonelle couldn't open English pronunciation rules.".to_string())?
+        .insert(normalized_word, phonemes.clone());
+    Ok(phonemes)
+}
+
+fn arpabet_to_kokoro(phoneme: &str) -> String {
+    let (base, stress) = phoneme
+        .strip_suffix('0')
+        .map(|base| (base, None))
+        .or_else(|| phoneme.strip_suffix('1').map(|base| (base, Some('ˈ'))))
+        .or_else(|| phoneme.strip_suffix('2').map(|base| (base, Some('ˌ'))))
+        .unwrap_or((phoneme, None));
+    let sound = match base {
+        "AA" => "ɑ",
+        "AE" => "æ",
+        "AH" if stress.is_none() => "ə",
+        "AH" => "ʌ",
+        "AO" => "ɔ",
+        "AW" => "aʊ",
+        "AX" => "ə",
+        "AXR" | "ER" => "ɜ",
+        "AY" => "aɪ",
+        "EH" => "ɛ",
+        "EY" => "eɪ",
+        "IH" | "IX" => "ɪ",
+        "IY" => "i",
+        "OW" => "oʊ",
+        "OY" => "ɔɪ",
+        "UH" => "ʊ",
+        "UW" | "UX" => "u",
+        "B" => "b",
+        "CH" => "ʧ",
+        "D" => "d",
+        "DH" => "ð",
+        "DX" => "ɾ",
+        "EL" => "l",
+        "EM" => "m",
+        "EN" | "NX" => "n",
+        "F" => "f",
+        "G" => "ɡ",
+        "HH" => "h",
+        "JH" => "ʤ",
+        "K" => "k",
+        "L" => "l",
+        "M" => "m",
+        "N" => "n",
+        "NG" => "ŋ",
+        "P" => "p",
+        "Q" => "ʔ",
+        "R" => "ɹ",
+        "S" => "s",
+        "SH" => "ʃ",
+        "T" => "t",
+        "TH" => "θ",
+        "V" => "v",
+        "W" | "WH" => "w",
+        "Y" => "j",
+        "Z" => "z",
+        "ZH" => "ʒ",
+        _ => "",
+    };
+    stress.map_or_else(|| sound.to_string(), |marker| format!("{marker}{sound}"))
+}
+
+fn join_intra_word_hyphens(text: &str) -> String {
+    let characters = text.chars().collect::<Vec<_>>();
+    let mut joined = String::with_capacity(text.len());
+    for (index, character) in characters.iter().enumerate() {
+        let between_letters = index > 0
+            && index + 1 < characters.len()
+            && characters[index - 1].is_alphabetic()
+            && characters[index + 1].is_alphabetic();
+        let is_hyphen = matches!(character, '-' | '‐' | '‑' | '‒' | '–' | '−');
+        if !(between_letters && is_hyphen) {
+            joined.push(*character);
+        }
+    }
+    joined
+}
+
+#[cfg(test)]
+mod tests {
+    use misaki_rs::{Language, G2P};
+
+    use super::{phonemize_kokoro_english_sentences, KokoroEnglishDialect, KokoroTextSentence};
+
+    #[test]
+    fn phonemizes_english_sentences_for_kokoro() {
+        let phonemes = phonemize_kokoro_english_sentences(
+            &[
+                sentence(
+                    "sentence-1",
+                    "Sonelle keeps narration aligned with the text.",
+                ),
+                sentence("sentence-2", "Chapter fourteen starts here."),
+            ],
+            KokoroEnglishDialect::American,
+        )
+        .expect("English sentences should phonemize");
+
+        assert_eq!(phonemes.len(), 2);
+        assert_eq!(phonemes[0].sentence_id, "sentence-1");
+        assert_eq!(phonemes[1].sentence_id, "sentence-2");
+        assert!(phonemes
+            .iter()
+            .all(|sentence| !sentence.phonemes.is_empty()));
+        assert!(phonemes
+            .iter()
+            .all(|sentence| !sentence.phonemes.contains('❓')));
+    }
+
+    #[test]
+    fn supports_british_english_phonemization() {
+        let phonemes = phonemize_kokoro_english_sentences(
+            &[sentence("sentence-1", "The schedule is full.")],
+            KokoroEnglishDialect::British,
+        )
+        .expect("British English should phonemize");
+
+        assert_eq!(phonemes[0].sentence_id, "sentence-1");
+        assert!(!phonemes[0].phonemes.is_empty());
+    }
+
+    #[test]
+    fn rejects_empty_sentence_text() {
+        let error = phonemize_kokoro_english_sentences(
+            &[sentence("sentence-1", "   ")],
+            KokoroEnglishDialect::American,
+        )
+        .expect_err("empty sentence should fail");
+
+        assert_eq!(error, "English narration input is invalid.");
+    }
+
+    #[test]
+    fn rejects_unknown_phoneme_output() {
+        let error = phonemize_kokoro_english_sentences(
+            &[sentence("sentence-1", "🎉")],
+            KokoroEnglishDialect::American,
+        )
+        .expect_err("unknown phoneme marker should fail");
+
+        assert_eq!(error, "English narration input is invalid.");
+    }
+
+    #[test]
+    fn keeps_hyphenated_compounds_in_one_spoken_phrase() {
+        let phonemes = phonemes_for("trade-offs");
+
+        assert!(
+            !phonemes.contains(' '),
+            "hyphenated compounds must not gain an internal pause: {phonemes}"
+        );
+        assert_eq!(phonemes, phonemes_for("trade‑offs"));
+    }
+
+    #[test]
+    fn reads_emphasized_words_like_their_normally_cased_form() {
+        assert_eq!(phonemes_for("POLITICAL"), phonemes_for("political"));
+    }
+
+    #[test]
+    fn predicts_unknown_names_instead_of_spelling_each_letter() {
+        let phonemes = phonemes_for("Kaczynski");
+
+        assert!(
+            !phonemes.contains(' '),
+            "unknown names must receive a word pronunciation: {phonemes}"
+        );
+        assert_eq!(phonemes, phonemes_for("KACZYNSKI"));
+    }
+
+    #[test]
+    fn preserves_short_initialisms() {
+        let phonemes = phonemes_for("FBI");
+        let raw = G2P::new(Language::EnglishUS)
+            .g2p("FBI")
+            .expect("initialism should phonemize")
+            .0
+            .trim()
+            .to_string();
+
+        assert_eq!(phonemes, raw);
+    }
+
+    fn phonemes_for(text: &str) -> String {
+        phonemize_kokoro_english_sentences(
+            &[sentence("sentence-1", text)],
+            KokoroEnglishDialect::American,
+        )
+        .expect("fixture should phonemize")[0]
+            .phonemes
+            .clone()
+    }
+
+    fn sentence(sentence_id: &str, text: &str) -> KokoroTextSentence {
+        KokoroTextSentence {
+            sentence_id: sentence_id.to_string(),
+            text: text.to_string(),
+        }
+    }
+}

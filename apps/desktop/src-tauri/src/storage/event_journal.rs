@@ -1,6 +1,44 @@
 use chrono::Utc;
 use rusqlite::{params, Connection};
 
+const ALLOWED_RENDERER_EVENTS: &[&str] = &[
+    "BookImportRequested",
+    "BookImportCancelled",
+    "BookImportFailed",
+    "NarrationPlaybackRequested",
+    "NarrationPreparationStarted",
+    "PassageNarrationReady",
+    "PassageNarrationPlaybackEnded",
+    "NarrationSentenceEntered",
+    "NarrationPlaybackPaused",
+    "NarrationPlaybackEnded",
+    "NarrationPlaybackFailed",
+    "NarrationResetRequested",
+    "UpcomingNarrationPreparationRequested",
+    "UpcomingNarrationPreparationReady",
+    "UpcomingNarrationPreparationFailed",
+    "WordInspected",
+    "WordLookupStarted",
+    "WordLookupCompleted",
+    "WordSaved",
+    "WordForgotten",
+    "VoiceInstallationRequested",
+    "VoiceInstallationReady",
+    "VoiceInstallationFailed",
+    "OfflineNarrationFilesInstallationRequested",
+    "OfflineNarrationFilesInstallationReady",
+    "OfflineNarrationFilesInstallationFailed",
+    "PreparedNarrationClearingRequested",
+    "PreparedNarrationCleared",
+    "PreparedNarrationClearingFailed",
+    "BookExportRequested",
+    "BookExported",
+    "BookExportFailed",
+    "ReaderOpened",
+    "ReaderClosed",
+    "ReaderTypographyChanged",
+];
+
 pub(super) fn insert_event(
     connection: &Connection,
     name: &str,
@@ -26,17 +64,7 @@ pub(super) fn insert_renderer_event(
     occurred_at: &str,
     payload: &serde_json::Value,
 ) -> Result<(), String> {
-    const ALLOWED_EVENTS: [&str; 7] = [
-        "AudioPreparationRequested",
-        "SentenceAudioReady",
-        "AudioPreparationFailed",
-        "WordInspected",
-        "VoiceInstallationRequested",
-        "VoiceInstallationReady",
-        "VoiceInstallationFailed",
-    ];
-
-    if !ALLOWED_EVENTS.contains(&name) || id.len() > 128 || occurred_at.len() > 64 {
+    if !ALLOWED_RENDERER_EVENTS.contains(&name) || id.len() > 128 || occurred_at.len() > 64 {
         return Err("That reader update was not recognized.".to_string());
     }
 
@@ -60,7 +88,7 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::json;
 
-    use super::insert_renderer_event;
+    use super::{insert_renderer_event, ALLOWED_RENDERER_EVENTS};
 
     #[test]
     fn renderer_events_are_allowlisted_and_persisted() {
@@ -76,39 +104,26 @@ mod tests {
             )
             .expect("event table should exist");
 
-        insert_renderer_event(
-            &connection,
-            "event-1",
-            "WordInspected",
-            "2026-07-10T00:00:00.000Z",
-            &json!({ "surface": "bonjour" }),
-        )
-        .expect("known event should persist");
+        for (index, name) in ALLOWED_RENDERER_EVENTS.iter().enumerate() {
+            insert_renderer_event(
+                &connection,
+                &format!("event-{index}"),
+                name,
+                "2026-07-10T00:00:00.000Z",
+                &json!({}),
+            )
+            .expect("known renderer event should persist");
+        }
 
         let count = connection
             .query_row("SELECT COUNT(*) FROM domain_events", [], |row| {
                 row.get::<_, i64>(0)
             })
             .expect("event count should read");
-        assert_eq!(count, 1);
-        insert_renderer_event(
-            &connection,
-            "event-2",
-            "VoiceInstallationReady",
-            "2026-07-10T00:00:00.000Z",
-            &json!({ "voiceId": "en_US-amy-medium" }),
-        )
-        .expect("voice installation events should persist");
-
-        let count = connection
-            .query_row("SELECT COUNT(*) FROM domain_events", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .expect("event count should read");
-        assert_eq!(count, 2);
+        assert_eq!(count, ALLOWED_RENDERER_EVENTS.len() as i64);
         assert!(insert_renderer_event(
             &connection,
-            "event-3",
+            "event-unknown",
             "ArbitraryRendererEvent",
             "2026-07-10T00:00:00.000Z",
             &json!({})

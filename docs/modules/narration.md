@@ -2,52 +2,73 @@
 
 ## Owns
 
-- voice catalog metadata and language-aware voice resolution
-- narration request identity, prefetching, and playback readiness contracts
-- the desktop adapter for native Piper preparation and playback
-- selected-voice installation status, progress, verification, and retry
+- language-aware routing to Kokoro for English and Supertonic for other supported languages
+- versioned passage requests, manifests, sentence spans, cache identity, and playback sessions
+- bounded native ONNX runtime construction, cancellation, and installed narration-file packs
+- compatibility projection for legacy Piper sentence audio while that rollback path remains available
 
 ## Refuses To Own
 
-- reader UI state, chapter navigation, or reading progress
-- book-language detection and EPUB metadata extraction
-- persisted reader preferences
+- reader navigation, Solid state, bookmarks, or reading-position persistence
+- EPUB parsing and sentence segmentation
+- word-level timing or approximate sentence highlighting
 
 ## Interface
 
-Reader workflows depend on `PrefetchingNarrationGateway`. Voice labels, locales, descriptions, and
-the default voice come from `packages/audio/src/narration-voices.json`. Browser media lifecycle is
-hidden behind the injected `HtmlAudioPlayer` interface. Native voice progress projects cumulative
-downloaded bytes, total bytes, and percentage into the reader without exposing network details.
-Playback volume is persisted with the reader's audio settings. `HtmlAudioPlayer` owns ordinary
-media fallback and the primary decoded-buffer playback path. Prepared sentence bytes are decoded
-into Web Audio buffers and connected to one persistent gain bus, allowing a modest narration boost
-without putting audio graph details into Solid components or rebuilding the output path between
-sentences.
-`ReaderVoiceInstallationWorkflow` owns the requested, ready, and failed event lifecycle; the Solid
-reader supplies only selected-voice access and UI projection callbacks. The native installer uses a
-streaming download-client interface so transport failures can be tested without network access,
-while verified temporary-file replacement remains hidden inside the installer.
-Transient narration notices are presented only as dismissible notifications. The playback bar
-keeps book context on the left, transport and reading progress in the center, and volume plus the
-active-sentence bookmark action on the right. It does not contain a competing status-message slot.
-Native Piper and Python commands are created through the background-process platform adapter so
-voice preparation never opens a console window over the reader on Windows.
+`@sonelle/audio` exposes settings and voice selection. `@sonelle/audio/narration` exposes the stable
+manifest, routing, preparation, player, and session contracts. `@sonelle/audio/compatibility` keeps
+Piper and legacy prefetch behavior out of the primary API; `@sonelle/audio/testing` contains fakes.
+
+The desktop native adapter sends `ManifestNarrationRequest` values through Tauri. Installed engine
+packs are verified by size and SHA-256 before either provider can render. Kokoro prepares English
+passages with exact sentence spans. Its text boundary uses Misaki for dictionary and contextual
+phonemization, then an embedded pure-Rust predictor for genuine unknown English words; hyphenated
+compounds retain one spoken phrase while short initialisms remain spelled. Supertonic renders
+supported non-English sentences into one manifest-backed WAV. Both providers reuse bounded native
+sessions and accept terminable run options.
+
+The session keeps three contextual Kokoro passages prepared. Supertonic groups at most two ordinary
+sentences per passage and keeps two passages prepared, while one reusable runtime and one ONNX thread
+bound CPU pressure. Long internally split sentences retain the provider's single-sentence path.
+Upcoming-chapter preparation uses the same limits and is cancelled when reader context changes.
+
+Language-pack voices are projected only after their provider files report ready. Installation
+updates refresh the current book's voice field immediately; the UI does not poll provider state.
 
 ## Domain Events
 
-`AudioPreparationRequested`, `SentenceAudioReady`, and `AudioPreparationFailed` describe the
-reader-visible narration lifecycle. `VoiceInstallationRequested`, `VoiceInstallationReady`, and
-`VoiceInstallationFailed` describe the separately managed offline voice lifecycle.
+The durable lifecycle includes `NarrationPlaybackRequested`, `NarrationPreparationStarted`,
+`PassageNarrationReady`, `NarrationSentenceEntered`, `PassageNarrationPlaybackEnded`,
+`NarrationPlaybackPaused`, `NarrationPlaybackEnded`, `NarrationPlaybackFailed`,
+`NarrationResetRequested`, and the upcoming-chapter preparation events.
+
+Reader projections react synchronously to these facts. Durable event-journal writes run through an
+ordered background observer: storage latency and storage diagnostics never delay prepared audio or
+become playback control flow.
+
+Prepared-audio maintenance is scoped to the active book. Manifest assets persist their book and
+chapter ownership; cached manifests from older builds acquire that ownership when reused without
+regenerating audio. The legacy Piper rollback cache records a small book-ownership sidecar when an
+entry is prepared or reused. Stats and clearing exclude unowned legacy entries rather than
+misrepresenting library-wide data as belonging to the open book.
+
+Voice and narration-file installation use requested, ready, and failed facts. Progress events and
+`NarrationSettingsChanged` are explicitly transient because they are live projections rather than
+replayable business history.
+
+## Invariants
+
+- highlighted sentence spans must come from the prepared manifest; timing is never guessed
+- cache identity includes engine, model revision, provider preparation revision, voice, source
+  digest, and synthesis parameters
+- cancellation prevents stale preparation from becoming current playback
+- provider thread counts and ONNX allocator settings remain bounded
+- user-facing errors describe recovery, not engine or queue internals
 
 ## Tests
 
-Package tests cover voice selection, settings, request identity, and prefetch behavior. Rust tests
-cover native request validation, cache behavior, the shared default voice catalog, platform
-selection, safe extraction, and verified voice files without making network requests.
-Desktop playback tests verify complete-buffer completion, persistent output routing, volume and
-speed changes, explicit stopping, playback failures, and prepared-source cleanup.
-Workflow tests verify that each installation request produces one persisted ready or failed
-lifecycle. Native fake-download tests cover successful streaming and partial-file cleanup after an
-interrupted transfer.
-Native checks on each release target compile the platform-specific background process adapter.
+Package tests cover routing, identity, sessions, cancellation, lookahead, and compatibility. Reader
+workflow tests cover preparation events, settings reactions, reset, and cross-chapter prefetch.
+Native tests cover pack verification, cache writes, provider input validation, manifests, and
+cancellation. The release-candidate provider smoke installs local packs and runs real Kokoro and
+Supertonic inference sequentially with one ONNX thread per provider.

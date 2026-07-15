@@ -1,7 +1,54 @@
-@import "@fontsource-variable/dm-sans";
-@import "@fontsource/commit-mono/400.css";
-@import "@fontsource/commit-mono/500.css";
-@import "@fontsource/commit-mono/600.css";
-@import "@fontsource/commit-mono/700.css";
 @import "./styles/reader-base.css";
 @import "./styles/product-shell.css";
+
+@font-face {
+  font-family: "Satoshi";
+  src: url("./assets/fonts/satoshi/Satoshi-Variable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Satoshi";
+  src: url("./assets/fonts/satoshi/Satoshi-VariableItalic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 300 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "SpaceMono Nerd Font Propo";
+  src: url("./assets/fonts/space-mono-nerd-font-propo/SpaceMonoNerdFontPropo-Regular.woff2")
+    format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "SpaceMono Nerd Font Propo";
+  src: url("./assets/fonts/space-mono-nerd-font-propo/SpaceMonoNerdFontPropo-Bold.woff2")
+    format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "SpaceMono Nerd Font Propo";
+  src: url("./assets/fonts/space-mono-nerd-font-propo/SpaceMonoNerdFontPropo-Italic.woff2")
+    format("woff2");
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "SpaceMono Nerd Font Propo";
+  src: url("./assets/fonts/space-mono-nerd-font-propo/SpaceMonoNerdFontPropo-BoldItalic.woff2")
+    format("woff2");
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+}

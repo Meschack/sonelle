@@ -22,7 +22,7 @@ Persist paragraph ranges during import as a storage projection:
 - sentences remain the source for playback and highlighting
 - paragraphs store only chapter-local sentence ranges
 - opening a chapter groups already-loaded sentences into paragraphs
-- legacy books without paragraph ranges fall back to body parsing
+- legacy books without paragraph ranges are repaired asynchronously in bounded background batches
 
 Build reader views with:
 
@@ -42,6 +42,10 @@ common.
 
 The paragraph projection is intentionally not a domain source of truth. It can be rebuilt from
 chapter body and sentence rows if needed.
+
+The reader no longer reparses legacy chapter bodies during open. Startup schedules a background
+repair after storage is managed, persists repair lifecycle events, and isolates unreadable books so
+later rows still progress.
 
 Audio transport was still a separate performance concern when this decision was accepted. Decision
 0012 subsequently moved prepared WAVs to scoped Tauri asset URLs.

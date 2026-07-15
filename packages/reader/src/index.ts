@@ -1,4 +1,4 @@
-import type { SentenceRef } from "@sonelle/domain";
+import type { DomainEvent, SentenceRef } from "@sonelle/domain";
 
 export type PlaybackStatus = "idle" | "playing" | "paused" | "ended";
 export type ReaderToolTab = "word" | "search" | "bookmarks" | "settings";
@@ -20,8 +20,17 @@ export interface ReaderPlaybackState {
 export interface ReaderPreferences {
   toolTab: ReaderToolTab;
   libraryFilter: ReaderLibraryFilterPreference;
+  libraryRailWidth: number;
+  inspectorRailWidth: number;
   contentFontSize: number;
+  contentFontFamily: string | null;
+  uiFontFamily: string | null;
 }
+
+export type ReaderTypographyPreferences = Pick<
+  ReaderPreferences,
+  "contentFontSize" | "contentFontFamily" | "uiFontFamily"
+>;
 
 export interface SearchableSentence {
   id: string;
@@ -86,6 +95,12 @@ export interface ReadingPositionSchedulerOptions<TPosition> {
   onError?(error: unknown): void;
 }
 
+export type NarrationPlaybackProjectionEvent =
+  | DomainEvent<"NarrationSentenceEntered">
+  | DomainEvent<"NarrationPlaybackPaused">
+  | DomainEvent<"NarrationPlaybackEnded">
+  | DomainEvent<"NarrationPlaybackFailed">;
+
 export function highlightSentence(sentenceId: string | null): HighlightState {
   return { activeSentenceId: sentenceId };
 }
@@ -100,7 +115,11 @@ export function createPlaybackState(): ReaderPlaybackState {
 export const DEFAULT_READER_PREFERENCES: ReaderPreferences = {
   toolTab: "word",
   libraryFilter: "all",
-  contentFontSize: 16
+  libraryRailWidth: 340,
+  inspectorRailWidth: 400,
+  contentFontSize: 16,
+  contentFontFamily: null,
+  uiFontFamily: null
 };
 
 export function createReaderPreferences(input: Partial<ReaderPreferences> = {}): ReaderPreferences {
@@ -109,10 +128,25 @@ export function createReaderPreferences(input: Partial<ReaderPreferences> = {}):
     libraryFilter: isReaderLibraryFilter(input.libraryFilter)
       ? input.libraryFilter
       : DEFAULT_READER_PREFERENCES.libraryFilter,
+    libraryRailWidth: normalizeRailWidth(
+      input.libraryRailWidth,
+      DEFAULT_READER_PREFERENCES.libraryRailWidth
+    ),
+    inspectorRailWidth: normalizeRailWidth(
+      input.inspectorRailWidth,
+      DEFAULT_READER_PREFERENCES.inspectorRailWidth
+    ),
     contentFontSize: clampContentFontSize(
       input.contentFontSize ?? DEFAULT_READER_PREFERENCES.contentFontSize
-    )
+    ),
+    contentFontFamily: normalizeFontFamily(input.contentFontFamily),
+    uiFontFamily: normalizeFontFamily(input.uiFontFamily)
   };
+}
+
+function normalizeRailWidth(value: number | undefined, fallback: number): number {
+  if (value == null || !Number.isFinite(value)) return fallback;
+  return Math.min(600, Math.max(180, Math.round(value)));
 }
 
 export function serializeReaderPreferences(preferences: ReaderPreferences): string {
@@ -127,6 +161,17 @@ export function parseReaderPreferences(value: string | null): ReaderPreferences 
   } catch {
     return DEFAULT_READER_PREFERENCES;
   }
+}
+
+export function readerTypographyPreferences(
+  preferences: ReaderPreferences
+): ReaderTypographyPreferences {
+  const normalized = createReaderPreferences(preferences);
+  return {
+    contentFontSize: normalized.contentFontSize,
+    contentFontFamily: normalized.contentFontFamily,
+    uiFontFamily: normalized.uiFontFamily
+  };
 }
 
 export function playPlayback(
@@ -209,6 +254,45 @@ export function finishSentencePlayback(
     ...advanced,
     status: "paused"
   };
+}
+
+export function projectNarrationEventToPlayback(
+  state: ReaderPlaybackState,
+  sentenceIds: readonly string[],
+  event: NarrationPlaybackProjectionEvent
+): ReaderPlaybackState {
+  switch (event.name) {
+    case "NarrationSentenceEntered": {
+      const sentenceIndex = sentenceIds.indexOf(event.payload.sentenceId);
+      if (sentenceIndex < 0) return state;
+      return {
+        activeSentenceIndex: sentenceIndex,
+        status: "playing"
+      };
+    }
+    case "NarrationPlaybackPaused": {
+      const sentenceIndex = sentenceIds.indexOf(event.payload.sentenceId);
+      return {
+        activeSentenceIndex:
+          sentenceIndex < 0
+            ? state.activeSentenceIndex
+            : clampSentenceIndex(sentenceIndex, sentenceIds.length),
+        status: "paused"
+      };
+    }
+    case "NarrationPlaybackEnded": {
+      const sentenceIndex = sentenceIds.indexOf(event.payload.lastSentenceId);
+      return {
+        activeSentenceIndex:
+          sentenceIndex < 0
+            ? state.activeSentenceIndex
+            : clampSentenceIndex(sentenceIndex, sentenceIds.length),
+        status: "ended"
+      };
+    }
+    case "NarrationPlaybackFailed":
+      return pausePlayback(state);
+  }
 }
 
 export function searchReaderSentences<TSentence extends SearchableSentence>(
@@ -404,6 +488,19 @@ function isReaderLibraryFilter(value: unknown): value is ReaderLibraryFilterPref
 function clampContentFontSize(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_READER_PREFERENCES.contentFontSize;
   return Math.min(24, Math.max(14, Math.round(value)));
+}
+
+function normalizeFontFamily(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const family = value.trim();
+  if (
+    family.length === 0 ||
+    family.length > 160 ||
+    [...family].some((character) => /[\u0000-\u001f\u007f]/u.test(character))
+  ) {
+    return null;
+  }
+  return family;
 }
 
 function createSearchExcerpt(text: string, normalizedQuery: string): string {

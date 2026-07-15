@@ -11,6 +11,7 @@ describe("memory event journal", () => {
         bookId: "book-1",
         chapterId: "chapter-2",
         sentenceId: "sentence-3",
+        tokenIndex: 0,
         surface: "bonjour",
         language: "fr"
       },

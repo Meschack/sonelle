@@ -1,4 +1,4 @@
-import type { LibraryBookSummary } from "./reader-document";
+import type { LibraryBookSummary } from "../library/library-models";
 
 export function slugify(value: string): string {
   return (
@@ -45,4 +45,10 @@ export function isTypingTarget(target: EventTarget | null): boolean {
     target.tagName === "TEXTAREA" ||
     target.tagName === "SELECT"
   );
+}
+
+export function cssFontFamilyStack(fontFamily: string | null, fallback: string): string {
+  if (fontFamily == null) return fallback;
+  const escaped = fontFamily.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"');
+  return `"${escaped}", ${fallback}`;
 }

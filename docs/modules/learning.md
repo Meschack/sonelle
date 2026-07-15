@@ -22,6 +22,12 @@ codes are normalized by `@sonelle/domain` before an API endpoint is selected.
 `WordInspected` records the book, chapter, sentence, surface text, and normalized book language
 context without coupling lookup to playback timing.
 
+## Invariants
+
+- word lookup never participates in narration timing or playback control
+- adapters return normalized insight data rather than leaking provider response shapes into the UI
+- lookup failures remain recoverable reader feedback and do not mutate saved-word state
+
 ## Tests
 
 Package tests cover response parsing and saved words. Adapter tests cover endpoint selection,

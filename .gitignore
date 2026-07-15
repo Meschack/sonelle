@@ -4,9 +4,13 @@ target/
 src-tauri/target/
 .DS_Store
 *.log
+*.pyc
+__pycache__/
 .env
 .env.*
 !.env.example
 .readex/
 .sonelle/
 apps/desktop/src-tauri/resources/windows-runtime/*.dll
+marketing/sonelle-promo-video/
+output/

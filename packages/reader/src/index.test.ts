@@ -12,6 +12,7 @@ import {
   movePlayback,
   parseReaderPreferences,
   playPlayback,
+  projectNarrationEventToPlayback,
   searchReaderSentences,
   selectPlaybackSentence,
   serializeReaderPreferences,
@@ -63,6 +64,52 @@ describe("reader playback", () => {
         status: "paused"
       }
     );
+  });
+
+  it("projects manifest narration events into playback state", () => {
+    const sentenceIds = ["sentence-1", "sentence-2", "sentence-3"];
+
+    expect(
+      projectNarrationEventToPlayback(
+        { activeSentenceIndex: 0, status: "paused" },
+        sentenceIds,
+        narrationEvent("NarrationSentenceEntered", {
+          sentenceId: "sentence-2",
+          passageId: "passage-1"
+        })
+      )
+    ).toEqual({ activeSentenceIndex: 1, status: "playing" });
+    expect(
+      projectNarrationEventToPlayback(
+        { activeSentenceIndex: 1, status: "playing" },
+        sentenceIds,
+        narrationEvent("NarrationPlaybackPaused", {
+          sentenceId: "sentence-2",
+          passageId: "passage-1"
+        })
+      )
+    ).toEqual({ activeSentenceIndex: 1, status: "paused" });
+    expect(
+      projectNarrationEventToPlayback(
+        { activeSentenceIndex: 1, status: "playing" },
+        sentenceIds,
+        narrationEvent("NarrationPlaybackEnded", {
+          passageId: "passage-1",
+          lastSentenceId: "sentence-3"
+        })
+      )
+    ).toEqual({ activeSentenceIndex: 2, status: "ended" });
+    expect(
+      projectNarrationEventToPlayback(
+        { activeSentenceIndex: 1, status: "playing" },
+        sentenceIds,
+        narrationEvent("NarrationPlaybackFailed", {
+          sentenceId: "sentence-2",
+          passageId: "passage-1",
+          reason: "needs attention"
+        })
+      )
+    ).toEqual({ activeSentenceIndex: 1, status: "paused" });
   });
 });
 
@@ -275,12 +322,20 @@ describe("reader preferences", () => {
       createReaderPreferences({
         toolTab: "settings",
         libraryFilter: "bookmarked",
-        contentFontSize: 19
+        libraryRailWidth: 356.4,
+        inspectorRailWidth: 418.7,
+        contentFontSize: 19,
+        contentFontFamily: "Literata",
+        uiFontFamily: "Inter"
       })
     ).toEqual({
       toolTab: "settings",
       libraryFilter: "bookmarked",
-      contentFontSize: 19
+      libraryRailWidth: 356,
+      inspectorRailWidth: 419,
+      contentFontSize: 19,
+      contentFontFamily: "Literata",
+      uiFontFamily: "Inter"
     });
     expect(
       parseReaderPreferences(
@@ -293,20 +348,32 @@ describe("reader preferences", () => {
     ).toEqual({
       toolTab: "word",
       libraryFilter: "all",
-      contentFontSize: 24
+      libraryRailWidth: 340,
+      inspectorRailWidth: 400,
+      contentFontSize: 24,
+      contentFontFamily: null,
+      uiFontFamily: null
     });
     expect(
       parseReaderPreferences(
         serializeReaderPreferences({
           toolTab: "search",
           libraryFilter: "in-progress",
-          contentFontSize: 13
+          libraryRailWidth: 375,
+          inspectorRailWidth: 425,
+          contentFontSize: 13,
+          contentFontFamily: "  Source Serif 4  ",
+          uiFontFamily: "Bad\nFont"
         })
       )
     ).toEqual({
       toolTab: "search",
       libraryFilter: "in-progress",
-      contentFontSize: 14
+      libraryRailWidth: 375,
+      inspectorRailWidth: 425,
+      contentFontSize: 14,
+      contentFontFamily: "Source Serif 4",
+      uiFontFamily: null
     });
   });
 });
@@ -317,4 +384,25 @@ function position(sentenceIndex: number): TestReadingPosition {
     chapterId: "chapter-1",
     sentenceIndex
   };
+}
+
+function narrationEvent<
+  TName extends Parameters<typeof projectNarrationEventToPlayback>[2]["name"]
+>(
+  name: TName,
+  payload: Omit<
+    Extract<Parameters<typeof projectNarrationEventToPlayback>[2], { name: TName }>["payload"],
+    "bookId" | "chapterId"
+  >
+): Extract<Parameters<typeof projectNarrationEventToPlayback>[2], { name: TName }> {
+  return {
+    id: `${name}-1`,
+    name,
+    occurredAt: "2026-07-13T00:00:00.000Z",
+    payload: {
+      bookId: "book-1",
+      chapterId: "chapter-1",
+      ...payload
+    }
+  } as unknown as Extract<Parameters<typeof projectNarrationEventToPlayback>[2], { name: TName }>;
 }

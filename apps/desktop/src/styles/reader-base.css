@@ -1,8 +1,9 @@
 :root {
   --ui-font:
-    "DM Sans Variable", "DM Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
-  --reader-font: "Commit Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    Satoshi, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --reader-font:
+    "SpaceMono Nerd Font Propo", "Space Mono", "SFMono-Regular", Consolas, "Liberation Mono",
+    monospace;
   --paper: #fcf9f8;
   --sidebar: #f6f3f2;
   --surface: #ffffff;
@@ -65,9 +66,10 @@ svg {
 }
 
 .sonelle-shell {
-  --inspector-rail-width: 320px;
-  --library-rail-width: 260px;
+  --inspector-rail-width: 400px;
+  --library-rail-width: 340px;
   background: var(--paper);
+  font-family: var(--ui-font);
   display: grid;
   grid-template-columns: var(--library-rail-width) minmax(560px, 1fr) var(--inspector-rail-width);
   grid-template-rows: minmax(0, 1fr) 80px;
@@ -956,6 +958,7 @@ svg {
 .result-list button,
 .primary-tool-button,
 .secondary-tool-button,
+.mini-tool-button,
 .mini-danger,
 .speed-grid button {
   background: var(--surface);
@@ -1044,6 +1047,81 @@ svg {
 }
 
 .voice-installation-card .primary-tool-button {
+  width: 100%;
+}
+
+.mini-tool-button {
+  background: transparent;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 850;
+  min-height: 30px;
+  padding: 0 10px;
+}
+
+.offline-narration-files-card {
+  display: grid;
+  gap: 12px;
+}
+
+.offline-narration-file-list {
+  display: grid;
+  gap: 10px;
+}
+
+.offline-narration-file-card {
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.offline-narration-file-card.ready {
+  background: var(--green-soft);
+  border-color: rgba(21, 63, 52, 0.24);
+}
+
+.offline-narration-file-card.ready .voice-readiness {
+  color: var(--green);
+}
+
+.offline-narration-file-heading {
+  align-items: start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.offline-narration-file-heading span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.offline-narration-file-heading strong {
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.offline-narration-file-heading small,
+.offline-narration-file-card p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.offline-narration-file-card progress {
+  accent-color: var(--green);
+  height: 8px;
+  width: 100%;
+}
+
+.offline-narration-file-card .primary-tool-button {
   width: 100%;
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDomainEventDispatcher } from "@sonelle/domain";
+import { createMemoryEventJournal } from "@sonelle/storage";
 import { createReaderLibraryWorkflows } from "./reader-library-workflows";
 
 const importedDocument = {
@@ -26,15 +27,18 @@ describe("reader library workflows", () => {
     dispatcher.subscribe("BookImported", openBookReaction);
     const workflows = createReaderLibraryWorkflows({
       eventDispatcher: dispatcher,
-      repository: {
-        importBookFromDialog: vi.fn().mockResolvedValue(importedDocument),
-        importBookFromPath: vi.fn(),
-        saveBookmark: vi.fn(),
-        deleteBookmark: vi.fn()
-      }
+      eventSink: createMemoryEventJournal(),
+      friendlyError: friendlyError,
+      catalog: { list: vi.fn().mockResolvedValue([{ id: "book-1" }]) },
+      importer: {
+        importFromDialog: vi.fn().mockResolvedValue(importedDocument),
+        importFromPath: vi.fn()
+      },
+      bookmarks: { save: vi.fn(), delete: vi.fn() }
     });
+    const stop = workflows.start();
 
-    await workflows.importFromDialog(new Set(["book-1"]));
+    await workflows.importFromDialog();
 
     expect(projectionReaction).toHaveBeenCalledOnce();
     expect(openBookReaction).toHaveBeenCalledOnce();
@@ -42,6 +46,7 @@ describe("reader library workflows", () => {
       name: "BookImported",
       payload: { bookId: "book-1", replacedExisting: true }
     });
+    stop();
   });
 
   it("publishes bookmark facts after their core operations succeed", async () => {
@@ -50,19 +55,24 @@ describe("reader library workflows", () => {
     const deleted = vi.fn();
     dispatcher.subscribe("BookmarkCreated", created);
     dispatcher.subscribe("BookmarkDeleted", deleted);
-    const repository = {
-      importBookFromDialog: vi.fn(),
-      importBookFromPath: vi.fn(),
-      saveBookmark: vi.fn().mockResolvedValue({
+    const bookmarks = {
+      save: vi.fn().mockResolvedValue({
         id: "bookmark-1",
         bookId: "book-1",
         chapterId: "chapter-1",
         sentenceId: "sentence-1",
         sentenceIndex: 0
       }),
-      deleteBookmark: vi.fn().mockResolvedValue(undefined)
+      delete: vi.fn().mockResolvedValue(undefined)
     };
-    const workflows = createReaderLibraryWorkflows({ eventDispatcher: dispatcher, repository });
+    const workflows = createReaderLibraryWorkflows({
+      eventDispatcher: dispatcher,
+      eventSink: createMemoryEventJournal(),
+      friendlyError,
+      catalog: { list: vi.fn().mockResolvedValue([]) },
+      importer: { importFromDialog: vi.fn(), importFromPath: vi.fn() },
+      bookmarks
+    });
 
     await workflows.saveBookmark({
       bookId: "book-1",
@@ -84,4 +94,64 @@ describe("reader library workflows", () => {
       })
     );
   });
+
+  it("publishes import failures without making the request producer own the reaction", async () => {
+    const dispatcher = createDomainEventDispatcher();
+    const failed = vi.fn();
+    dispatcher.subscribe("BookImportFailed", failed);
+    const workflows = createReaderLibraryWorkflows({
+      eventDispatcher: dispatcher,
+      eventSink: createMemoryEventJournal(),
+      friendlyError,
+      catalog: { list: vi.fn().mockResolvedValue([]) },
+      importer: {
+        importFromDialog: vi.fn(),
+        importFromPath: vi.fn().mockRejectedValue(new Error("broken EPUB"))
+      },
+      bookmarks: { save: vi.fn(), delete: vi.fn() }
+    });
+    const stop = workflows.start();
+
+    await expect(workflows.importFromPath("/tmp/broken.epub")).resolves.toBeUndefined();
+
+    expect(failed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "BookImportFailed",
+        payload: { path: "/tmp/broken.epub", reason: "broken EPUB" }
+      })
+    );
+    stop();
+  });
+
+  it("publishes a terminal fact when the import dialog is dismissed", async () => {
+    const dispatcher = createDomainEventDispatcher();
+    const cancelled = vi.fn();
+    dispatcher.subscribe("BookImportCancelled", cancelled);
+    const workflows = createReaderLibraryWorkflows({
+      eventDispatcher: dispatcher,
+      eventSink: createMemoryEventJournal(),
+      friendlyError,
+      catalog: { list: vi.fn().mockResolvedValue([]) },
+      importer: {
+        importFromDialog: vi.fn().mockResolvedValue(null),
+        importFromPath: vi.fn()
+      },
+      bookmarks: { save: vi.fn(), delete: vi.fn() }
+    });
+    const stop = workflows.start();
+
+    await workflows.importFromDialog();
+
+    expect(cancelled).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "BookImportCancelled",
+        payload: { path: null }
+      })
+    );
+    stop();
+  });
 });
+
+function friendlyError(error: unknown): string {
+  return error instanceof Error ? error.message : "Import failed";
+}

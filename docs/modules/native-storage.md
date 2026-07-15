@@ -21,8 +21,15 @@ existing local libraries. New user-facing naming remains Sonelle.
 
 ## Domain Events
 
-Imports, reading-position changes, bookmark mutations, and exports are appended in the same native
-workflow as their projection update.
+Imports, reading-position changes, bookmark mutations, exports, and legacy repair are appended in
+the same native workflow as their projection update. Repair progress is batched and never blocks app
+startup.
+
+## Invariants
+
+- a durable projection and its domain event commit in the same SQLite transaction
+- renderer-originated durable events must be explicitly admitted by the native event allowlist
+- migrations preserve existing local libraries, including the intentional `.readex` compatibility path
 
 ## Tests
 

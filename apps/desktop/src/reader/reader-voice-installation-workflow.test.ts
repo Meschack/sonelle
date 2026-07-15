@@ -51,6 +51,24 @@ describe("reader voice installation workflow", () => {
     expect(harness.notices[harness.notices.length - 1]).toBe("Please retry.");
     stop();
   });
+
+  it("projects transient native progress without journaling it", async () => {
+    const harness = createHarness({ result: readyInstallation });
+    const stop = await harness.workflow.start();
+
+    harness.emitProgress({
+      ...readyInstallation,
+      status: "preparing",
+      downloadSizeBytes: 100,
+      downloadedBytes: 40,
+      progress: 40
+    });
+    await vi.waitFor(() =>
+      expect(harness.states[harness.states.length - 1]?.downloadedBytes).toBe(40)
+    );
+
+    stop();
+  });
 });
 
 function createHarness(outcome: { result: VoiceInstallationState } | { error: Error }) {
@@ -65,10 +83,14 @@ function createHarness(outcome: { result: VoiceInstallationState } | { error: Er
     if ("error" in outcome) throw outcome.error;
     return outcome.result;
   });
+  let progressListener: (state: VoiceInstallationState) => void = () => undefined;
   const repository: VoiceInstallationRepository = {
     getStatus: async () => readyInstallation,
     install,
-    listen: async () => () => undefined
+    listen: async (listener) => {
+      progressListener = listener;
+      return () => undefined;
+    }
   };
   const workflow = createReaderVoiceInstallationWorkflow({
     eventDispatcher: dispatcher,
@@ -80,5 +102,12 @@ function createHarness(outcome: { result: VoiceInstallationState } | { error: Er
     friendlyError: () => "Please retry."
   });
 
-  return { workflow, events, states, notices, install };
+  return {
+    workflow,
+    events,
+    states,
+    notices,
+    install,
+    emitProgress: (state: VoiceInstallationState) => progressListener(state)
+  };
 }
