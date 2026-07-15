@@ -24,21 +24,22 @@ artifact to provide an explicit `url`. The native downloader accepts `file://` a
 local catalog can install the exported Kokoro runtime pack through the same verified pack installer
 used by hosted artifacts.
 
-`pnpm spike:narration:kokoro-local-catalog` writes
-`.sonelle/narration-spike/local-engine-catalog.json` from the current local Kokoro spike files:
+`pnpm spike:narration:local-catalog` writes
+`.sonelle/narration-spike/local-engine-catalog.json` from the verified production artifacts downloaded by
+`pnpm spike:narration:models`:
 
-- `.sonelle/narration-spike/kokoro-onnx/kokoro.onnx`
-- `.sonelle/narration-spike/sources/kokoro/checkpoints/config.json`
-- `.sonelle/narration-spike/sources/kokoro/kokoro.js/voices/af_heart.bin`
-- `.sonelle/narration-spike/sources/kokoro/kokoro.js/voices/bf_emma.bin`
+- `.sonelle/narration-spike/sources/kokoro/assets/kokoro.onnx`
+- `.sonelle/narration-spike/sources/kokoro/assets/config.json`
+- `.sonelle/narration-spike/sources/kokoro/assets/voices/af_heart.bin`
+- `.sonelle/narration-spike/sources/kokoro/assets/voices/bf_emma.bin`
 
 Each artifact receives its local file URL, size, and SHA-256. The generated target paths match the
 native renderer's installed-pack layout under `assets/`.
 
 ## Consequences
 
-- Local desktop QA can install and render Kokoro through the real pack manager before production
-  hosting exists.
+- Local desktop QA and release-candidate verification install and render the exact pinned production
+  artifacts through the real pack manager.
 - The production catalog points to a pinned ONNX export, matching configuration, and pinned `.bin`
   voice-style files, all installed under the layout expected by the native renderer.
 - Local development can still override the catalog with file URLs, keeping the same verified pack

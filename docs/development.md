@@ -140,7 +140,7 @@ To prepare the pinned real-provider fixtures used by native development and rele
 
 ```bash
 pnpm spike:narration:models
-node scripts/setup-kokoro-reference.mjs --export-onnx --native-fixture --local-engine-catalog
+pnpm spike:narration:local-catalog
 pnpm qa:narration-providers
 ```
 
@@ -152,10 +152,10 @@ by hosted files. Start the desktop app against it with:
 SONELLE_NARRATION_ENGINE_CATALOG=.sonelle/narration-spike/local-engine-catalog.json pnpm dev:desktop
 ```
 
-Provider smoke tests run sequentially with one ONNX thread per provider. They cover direct Kokoro
-rendering, Kokoro manifest alignment, direct Supertonic rendering, and install-then-render for both
-packs. Optional Piper setup remains available with `pnpm setup:piper` when explicitly testing the
-compatibility adapter.
+Provider smoke tests run sequentially with one ONNX thread per provider. They use the exact pinned
+production artifacts and cover direct manifest rendering plus install-then-render for both packs.
+The Python Kokoro export and corpus commands remain separate research tools. Optional Piper setup
+remains available with `pnpm setup:piper` when explicitly testing the compatibility adapter.
 
 ## CI and Releases
 

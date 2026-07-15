@@ -36,12 +36,10 @@ jobs:
             gstreamer1.0-plugins-bad \
             libayatana-appindicator3-dev \
             libespeak-ng1 \
-            libportaudio2 \
             librsvg2-dev \
             libwebkit2gtk-4.1-dev \
             patchelf \
             pkg-config \
-            python3-venv \
             xdg-utils
 
       - name: Set up Node.js
@@ -66,7 +64,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .sonelle/narration-spike
-          key: narration-provider-smoke-${{ runner.os }}-${{ hashFiles('tools/narration-spike/engines.json', 'scripts/setup-narration-spike.mjs', 'scripts/setup-kokoro-reference.mjs') }}
+          key: narration-provider-smoke-v2-${{ runner.os }}-${{ hashFiles('tools/narration-spike/engines.json', 'scripts/setup-narration-spike.mjs', 'scripts/setup-kokoro-reference.mjs', 'scripts/run-narration-provider-smoke.mjs') }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -74,7 +72,7 @@ jobs:
       - name: Prepare pinned provider fixtures
         run: |
           pnpm spike:narration:models
-          node scripts/setup-kokoro-reference.mjs --export-onnx --native-fixture --local-engine-catalog
+          pnpm spike:narration:local-catalog
 
       - name: Run real provider smoke tests
         run: pnpm qa:narration-providers
