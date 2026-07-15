@@ -36,6 +36,7 @@ jobs:
             gstreamer1.0-plugins-bad \
             libayatana-appindicator3-dev \
             libespeak-ng1 \
+            libportaudio2 \
             librsvg2-dev \
             libwebkit2gtk-4.1-dev \
             patchelf \

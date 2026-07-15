@@ -1,11 +1,11 @@
 ---
 name: readex-steward
-description: Use when working inside Readex Next to enforce reader-first UX, sentence-level highlighting, event-driven architecture, deep modules, and humane user-facing language.
+description: Use when working inside Sonelle to enforce reader-first UX, sentence-level highlighting, event-driven architecture, deep modules, and humane user-facing language.
 ---
 
 # Readex Steward
 
-Use this checklist before and after non-trivial Readex Next changes.
+Use this checklist before and after non-trivial Sonelle changes.
 
 ## Product Check
 
