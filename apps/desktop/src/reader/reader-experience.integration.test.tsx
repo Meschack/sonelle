@@ -2,11 +2,16 @@
 
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { render } from "solid-js/web";
-import { DEFAULT_AUDIO_SETTINGS, SUPPORTED_NARRATION_VOICES } from "@sonelle/audio";
+import {
+  DEFAULT_AUDIO_SETTINGS,
+  SUPPORTED_NARRATION_VOICES,
+  type AudioSettings
+} from "@sonelle/audio";
 import { createDomainEvent, createDomainEventDispatcher } from "@sonelle/domain";
 import { createSavedDictionary } from "@sonelle/learning";
 import { createReaderPreferences, type ReaderPreferences } from "@sonelle/reader";
 import type { ReaderExperienceDependencies } from "./reader-dependencies";
+import type { LibraryBookSummary, ReaderDocumentDto } from "../library/library-models";
 import { ReaderExperience } from "./reader-experience";
 import type { ReaderNarrationWorkflow } from "./reader-narration-workflow";
 import { buildFixtureReaderView } from "./reader-view";
@@ -16,6 +21,266 @@ beforeAll(() => {
 });
 
 describe("ReaderExperience integration", () => {
+  it("drives narration settings and chapter navigation through keyboard shortcuts", async () => {
+    const saveAudioSettings = vi.fn();
+    const dependencies = createDependencies({
+      dispatcher: createDomainEventDispatcher(),
+      pause: vi.fn().mockResolvedValue(undefined),
+      stopNarration: vi.fn(),
+      stopDrops: vi.fn(),
+      stopVoiceEvents: vi.fn(),
+      saveAudioSettings
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const dispose = render(() => <ReaderExperience dependencies={dependencies} />, container);
+    await Promise.resolve();
+
+    dispatchShortcut("ArrowRight", { shiftKey: true });
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLSelectElement>('[aria-label="Current chapter"]')?.value
+      ).toBe(buildFixtureReaderView().chapters[1].id)
+    );
+
+    dispatchShortcut("m");
+    await vi.waitFor(() =>
+      expect(saveAudioSettings).toHaveBeenCalledWith(expect.objectContaining({ volume: 0 }))
+    );
+
+    dispatchShortcut("ArrowUp", { shiftKey: true });
+    await vi.waitFor(() =>
+      expect(saveAudioSettings).toHaveBeenCalledWith(expect.objectContaining({ volume: 0.05 }))
+    );
+
+    dispatchShortcut("r");
+    await vi.waitFor(() =>
+      expect(saveAudioSettings).toHaveBeenCalledWith(expect.objectContaining({ playbackRate: 1 }))
+    );
+    dispatchShortcut("R", { shiftKey: true });
+    await vi.waitFor(() =>
+      expect(saveAudioSettings).toHaveBeenCalledWith(expect.objectContaining({ playbackRate: 0.9 }))
+    );
+
+    dispose();
+    container.remove();
+  });
+
+  it("opens and focuses reader tools through keyboard shortcuts", async () => {
+    const dependencies = createDependencies({
+      dispatcher: createDomainEventDispatcher(),
+      pause: vi.fn().mockResolvedValue(undefined),
+      stopNarration: vi.fn(),
+      stopDrops: vi.fn(),
+      stopVoiceEvents: vi.fn()
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const dispose = render(() => <ReaderExperience dependencies={dependencies} />, container);
+    await Promise.resolve();
+
+    dispatchShortcut("c");
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Current chapter");
+
+    dispatchShortcut("f", { ctrlKey: true });
+    await Promise.resolve();
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Search this chapter");
+
+    dispatchShortcut("w");
+    expect(container.textContent).toContain("No word selected");
+    dispatchShortcut("n");
+    expect(container.textContent).toContain("Saved Passages");
+    dispatchShortcut(",", { metaKey: true });
+    expect(container.querySelector('[aria-label="Narration speed"]')).not.toBeNull();
+
+    dispose();
+    container.remove();
+  });
+
+  it("routes paragraph images, library closing, and imports through keyboard shortcuts", async () => {
+    const pause = vi.fn().mockResolvedValue(undefined);
+    const exportParagraphImage = vi.fn().mockResolvedValue("sonelle-passage.png");
+    const importFromDialog = vi.fn().mockResolvedValue(null);
+    const dependencies = createDependencies({
+      dispatcher: createDomainEventDispatcher(),
+      pause,
+      stopNarration: vi.fn(),
+      stopDrops: vi.fn(),
+      stopVoiceEvents: vi.fn(),
+      exportParagraphImage,
+      importFromDialog
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const dispose = render(() => <ReaderExperience dependencies={dependencies} />, container);
+    await Promise.resolve();
+
+    dispatchShortcut("S", { shiftKey: true });
+    await vi.waitFor(() => expect(exportParagraphImage).toHaveBeenCalledOnce());
+
+    dispatchShortcut("L", { shiftKey: true });
+    await vi.waitFor(() => expect(container.querySelector(".library-workspace")).not.toBeNull());
+    await vi.waitFor(() => expect(pause).toHaveBeenCalledOnce());
+
+    dispatchShortcut("o", { ctrlKey: true });
+    await vi.waitFor(() => expect(importFromDialog).toHaveBeenCalledOnce());
+
+    dispose();
+    container.remove();
+  });
+
+  it("shows an accessible keyboard shortcut reference", async () => {
+    const dependencies = createDependencies({
+      dispatcher: createDomainEventDispatcher(),
+      pause: vi.fn().mockResolvedValue(undefined),
+      stopNarration: vi.fn(),
+      stopDrops: vi.fn(),
+      stopVoiceEvents: vi.fn()
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const dispose = render(() => <ReaderExperience dependencies={dependencies} />, container);
+    await Promise.resolve();
+
+    dispatchShortcut("?", { shiftKey: true });
+    const dialog = await vi.waitFor(() => {
+      const element = document.querySelector('[role="dialog"][aria-modal="true"]');
+      expect(element).not.toBeNull();
+      return element;
+    });
+    expect(dialog?.textContent).toContain("Keyboard shortcuts");
+    expect(dialog?.textContent).toContain("Play or pause narration");
+    expect(dialog?.textContent).toContain("Save paragraph image");
+
+    dispatchShortcut("Escape");
+    await vi.waitFor(() =>
+      expect(document.querySelector('[role="dialog"][aria-modal="true"]')).toBeNull()
+    );
+
+    dispose();
+    container.remove();
+  });
+
+  it("navigates and filters the Library from the keyboard", async () => {
+    const openBook = vi.fn(async (bookId: string) => createReaderDocument(bookId));
+    const libraryBooks = [
+      createLibraryBook("book-one", "First Book", 0),
+      createLibraryBook("book-two", "Second Book", 3),
+      createLibraryBook("book-three", "Third Book", 0)
+    ];
+    const dependencies = createDependencies({
+      dispatcher: createDomainEventDispatcher(),
+      pause: vi.fn().mockResolvedValue(undefined),
+      stopNarration: vi.fn(),
+      stopDrops: vi.fn(),
+      stopVoiceEvents: vi.fn(),
+      libraryBooks,
+      openBook
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const dispose = render(() => <ReaderExperience dependencies={dependencies} />, container);
+    await vi.waitFor(() => expect(openBook).toHaveBeenCalledWith("book-one", undefined));
+    openBook.mockClear();
+
+    dispatchShortcut("L", { shiftKey: true });
+    await vi.waitFor(() =>
+      expect(container.querySelectorAll("[data-library-book-card]")).toHaveLength(3)
+    );
+
+    dispatchShortcut("f", { ctrlKey: true });
+    const search = container.querySelector<HTMLInputElement>(
+      '.library-workspace [aria-label="Search library"]'
+    );
+    expect(document.activeElement).toBe(search);
+    if (search == null) throw new Error("Library search was not rendered");
+    search.value = "Second";
+    search.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    dispatchShortcutFrom(search, "Escape");
+    expect(search.value).toBe("");
+
+    search.blur();
+    dispatchShortcut("2");
+    expect(
+      container.querySelector<HTMLButtonElement>(".library-filter-row button.active")?.textContent
+    ).toContain("In progress");
+    dispatchShortcut("Escape");
+    expect(
+      container.querySelector<HTMLButtonElement>(".library-filter-row button.active")?.textContent
+    ).toContain("All books");
+
+    dispatchShortcut("ArrowRight");
+    expect(document.activeElement?.getAttribute("data-library-book-card")).toBe("book-one");
+    dispatchShortcut("ArrowRight");
+    expect(document.activeElement?.getAttribute("data-library-book-card")).toBe("book-two");
+    if (!(document.activeElement instanceof HTMLElement)) {
+      throw new Error("A Library book was not focused");
+    }
+    dispatchShortcutFrom(document.activeElement, "Enter");
+    await vi.waitFor(() => expect(openBook).toHaveBeenCalledWith("book-two", undefined));
+
+    dispose();
+    container.remove();
+  });
+
+  it("routes power-user layout, chapter-boundary, palette, and fullscreen commands", async () => {
+    const toggleFullscreen = vi.fn().mockResolvedValue(undefined);
+    const pause = vi.fn().mockResolvedValue(undefined);
+    const dependencies = createDependencies({
+      dispatcher: createDomainEventDispatcher(),
+      pause,
+      stopNarration: vi.fn(),
+      stopDrops: vi.fn(),
+      stopVoiceEvents: vi.fn(),
+      toggleFullscreen
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    const dispose = render(() => <ReaderExperience dependencies={dependencies} />, container);
+    await Promise.resolve();
+
+    dispatchShortcut("b", { ctrlKey: true });
+    expect(container.querySelector(".sonelle-shell")?.classList).toContain(
+      "library-sidebar-collapsed"
+    );
+    dispatchShortcut("B", { ctrlKey: true, shiftKey: true });
+    expect(container.querySelector(".sonelle-shell")?.classList).toContain(
+      "inspector-sidebar-collapsed"
+    );
+
+    dispatchShortcut("End", { shiftKey: true });
+    expect(container.querySelector(".audio-progress")?.textContent).toContain("5 / 5");
+    dispatchShortcut("Home", { shiftKey: true });
+    expect(container.querySelector(".audio-progress")?.textContent).toContain("1 / 5");
+
+    dispatchShortcut("k", { metaKey: true });
+    await vi.waitFor(() =>
+      expect(document.querySelector('[role="dialog"][aria-label="Command palette"]')).not.toBeNull()
+    );
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Search commands");
+    dispatchShortcut("Escape");
+    await vi.waitFor(() =>
+      expect(document.querySelector('[role="dialog"][aria-label="Command palette"]')).toBeNull()
+    );
+
+    dispatchShortcut("k", { ctrlKey: true });
+    const commandSearch = document.querySelector<HTMLInputElement>(
+      '[aria-label="Command palette"] [aria-label="Search commands"]'
+    );
+    if (commandSearch == null) throw new Error("Command search was not rendered");
+    commandSearch.value = "Return to Library";
+    commandSearch.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    dispatchShortcutFrom(commandSearch, "Enter");
+    await vi.waitFor(() => expect(container.querySelector(".library-workspace")).not.toBeNull());
+    await vi.waitFor(() => expect(pause).toHaveBeenCalledOnce());
+
+    dispatchShortcut("F11");
+    await vi.waitFor(() => expect(toggleFullscreen).toHaveBeenCalledOnce());
+
+    dispose();
+    container.remove();
+  });
+
   it("starts the application workflows, reacts to reader closure, and disposes them", async () => {
     const dispatcher = createDomainEventDispatcher();
     const reader = buildFixtureReaderView();
@@ -388,6 +653,7 @@ interface DependencySpies {
   stopDrops(): void;
   stopVoiceEvents(): void;
   savePreferences?: (preferences: ReaderPreferences) => void;
+  saveAudioSettings?: (settings: AudioSettings) => void;
   requestPlayback?: (sentenceId: string) => void;
   engineStatus?: "ready" | "not-installed";
   offlineLibrary?: "individual-voice" | "language-pack";
@@ -398,7 +664,11 @@ interface DependencySpies {
     author: string;
     chapterTitle: string;
   }) => Promise<string>;
+  importFromDialog?: () => Promise<null>;
   getAudioCacheStats?: (bookId: string) => Promise<{ sentenceCount: number; sizeBytes: number }>;
+  toggleFullscreen?: () => Promise<void>;
+  libraryBooks?: LibraryBookSummary[];
+  openBook?: (bookId: string) => Promise<ReaderDocumentDto>;
 }
 
 function createDependencies(spies: DependencySpies): ReaderExperienceDependencies {
@@ -421,6 +691,9 @@ function createDependencies(spies: DependencySpies): ReaderExperienceDependencie
   } satisfies ReaderNarrationWorkflow;
 
   return {
+    appWindow: {
+      toggleFullscreen: spies.toggleFullscreen ?? vi.fn().mockResolvedValue(undefined)
+    },
     audioCacheRepository: {
       getStats:
         spies.getAudioCacheStats ?? vi.fn().mockResolvedValue({ sentenceCount: 0, sizeBytes: 0 }),
@@ -428,11 +701,11 @@ function createDependencies(spies: DependencySpies): ReaderExperienceDependencie
     },
     audioSettingsRepository: {
       load: () => DEFAULT_AUDIO_SETTINGS,
-      save: vi.fn()
+      save: spies.saveAudioSettings ?? vi.fn()
     },
     bookCatalog: {
-      list: vi.fn().mockResolvedValue([]),
-      open: vi.fn().mockRejectedValue(new Error("No library book selected"))
+      list: vi.fn().mockResolvedValue(spies.libraryBooks ?? []),
+      open: spies.openBook ?? vi.fn().mockRejectedValue(new Error("No library book selected"))
     },
     bookDropAdapter: { listen: vi.fn().mockResolvedValue(spies.stopDrops) },
     bookOpenRequestAdapter: { listen: vi.fn().mockResolvedValue(() => undefined) },
@@ -440,7 +713,7 @@ function createDependencies(spies: DependencySpies): ReaderExperienceDependencie
       exportData: vi.fn().mockRejectedValue(new Error("No library book selected"))
     },
     bookImporter: {
-      importFromDialog: vi.fn().mockResolvedValue(null),
+      importFromDialog: spies.importFromDialog ?? vi.fn().mockResolvedValue(null),
       importFromPath: vi.fn().mockRejectedValue(new Error("No import requested"))
     },
     bookmarkStore: {
@@ -503,5 +776,47 @@ function createDependencies(spies: DependencySpies): ReaderExperienceDependencie
       install: vi.fn().mockResolvedValue(readyVoice),
       listen: vi.fn().mockResolvedValue(spies.stopVoiceEvents)
     }
+  };
+}
+
+function dispatchShortcut(key: string, options: KeyboardEventInit = {}) {
+  window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...options }));
+}
+
+function dispatchShortcutFrom(target: HTMLElement, key: string, options: KeyboardEventInit = {}) {
+  target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...options }));
+}
+
+function createLibraryBook(
+  id: string,
+  title: string,
+  completedSentenceCount: number
+): LibraryBookSummary {
+  return {
+    id,
+    title,
+    author: "Library Author",
+    importedAt: "2026-07-17T00:00:00.000Z",
+    chapterCount: 2,
+    sentenceCount: 10,
+    lastChapterId: completedSentenceCount > 0 ? `${id}-chapter` : null,
+    completedSentenceCount
+  };
+}
+
+function createReaderDocument(bookId: string): ReaderDocumentDto {
+  return {
+    book: { id: bookId, title: "Opened Book", author: "Library Author", language: "en" },
+    activeChapterId: `${bookId}-chapter`,
+    chapters: [
+      {
+        id: `${bookId}-chapter`,
+        title: "Chapter 1",
+        index: 0,
+        sentenceCount: 1,
+        sentences: [{ id: `${bookId}-sentence`, index: 0, text: "Opened from the Library." }]
+      }
+    ],
+    position: null
   };
 }

@@ -29,6 +29,10 @@ import { createHtmlAudioPlayer } from "../audio/html-audio-player";
 import { createHtmlManifestNarrationPlayer } from "../audio/html-manifest-narration-player";
 import { reportAppError } from "../platform/error-reporting";
 import {
+  createAppWindowController,
+  type AppWindowController
+} from "../platform/app-window-controller";
+import {
   createEngineInstallationRepository,
   type EngineInstallationRepository,
   type EngineInstallationState,
@@ -93,6 +97,7 @@ export interface ReaderNarrationService {
 }
 
 export interface ReaderExperienceDependencies {
+  appWindow: AppWindowController;
   audioCacheRepository: AudioCacheRepository;
   audioSettingsRepository: AudioSettingsRepository;
   bookCatalog: BookCatalog;
@@ -129,6 +134,7 @@ export function createReaderExperienceDependencies(): ReaderExperienceDependenci
   const engineInstallations: Partial<Record<NarrationEngineId, EngineInstallationState>> = {};
 
   return {
+    appWindow: createAppWindowController(),
     audioCacheRepository: createAudioCacheRepository(),
     audioSettingsRepository: createAudioSettingsRepository(),
     bookCatalog,

@@ -1522,16 +1522,31 @@ svg {
 }
 
 .result-list .bookmark-card-button {
-  padding-right: 52px;
+  padding-right: 12px;
   width: 100%;
 }
 
+.result-list .bookmark-card-button > span {
+  padding-right: 88px;
+}
+
+.result-list .bookmark-passage-copy {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.result-list .bookmark-passage-copy.expanded {
+  display: block;
+  overflow: visible;
+}
+
+.result-list .bookmark-expand-button,
 .result-list .bookmark-delete-button {
   align-items: center;
-  background: rgba(155, 58, 32, 0.08);
   border: 1px solid transparent;
   border-radius: 999px;
-  color: var(--danger);
   display: inline-grid;
   height: 34px;
   justify-items: center;
@@ -1542,6 +1557,38 @@ svg {
   top: 10px;
   width: 34px;
   z-index: 1;
+}
+
+.result-list .bookmark-expand-button {
+  background: var(--green-soft);
+  color: var(--green);
+  right: 52px;
+}
+
+.result-list .bookmark-expand-button svg {
+  height: 16px;
+  transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+  width: 16px;
+}
+
+.result-list .bookmark-expand-button.expanded svg {
+  transform: rotate(180deg);
+}
+
+.result-list .bookmark-expand-button:hover {
+  background: #cee3d8;
+  border-color: rgba(21, 63, 52, 0.18);
+}
+
+.result-list .bookmark-expand-button:focus-visible {
+  border-color: var(--green);
+  outline: 2px solid rgba(21, 63, 52, 0.2);
+  outline-offset: 2px;
+}
+
+.result-list .bookmark-delete-button {
+  background: rgba(155, 58, 32, 0.08);
+  color: var(--danger);
 }
 
 .result-list .bookmark-delete-button:hover {

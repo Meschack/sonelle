@@ -10,7 +10,7 @@ import {
   Show,
   untrack
 } from "solid-js";
-import type { AudioSettings } from "@sonelle/audio";
+import { cycleNarrationPlaybackRate, type AudioSettings } from "@sonelle/audio";
 import { createDomainEvent, type AnyDomainEvent } from "@sonelle/domain";
 import {
   bookmarkedBookIds,
@@ -86,6 +86,17 @@ import { createReaderPlaybackApplication } from "./reader-playback-application";
 import { createReaderNarrationSettingsWorkflow } from "./reader-narration-settings-workflow";
 import { createReaderAppearanceWorkflow } from "./reader-appearance-workflow";
 import { createReaderTypographyWorkflow } from "./reader-typography-workflow";
+import {
+  resolveReaderKeyboardShortcut,
+  type ReaderKeyboardCommand
+} from "./reader-keyboard-shortcuts";
+import { ReaderKeyboardShortcutReference } from "./reader-keyboard-shortcut-reference";
+import { ReaderCommandPalette } from "./reader-command-palette";
+import {
+  renderedLibraryGridColumnCount,
+  resolveLibraryGridNavigationIndex,
+  type LibraryGridNavigationDirection
+} from "./library-keyboard-navigation";
 import {
   createReaderExperienceDependencies,
   type ReaderExperienceDependencies
@@ -181,6 +192,10 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     readerPreferences.inspectorRailWidth
   );
   const [activeView, setActiveView] = createSignal<AppView>("reader");
+  const [shortcutReferenceOpen, setShortcutReferenceOpen] = createSignal(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = createSignal(false);
+  const [librarySidebarCollapsed, setLibrarySidebarCollapsed] = createSignal(false);
+  const [inspectorSidebarCollapsed, setInspectorSidebarCollapsed] = createSignal(false);
   const [libraryRailMode, setLibraryRailMode] = createSignal(
     createLibraryRailMode(sampleReader.book.id)
   );
@@ -772,50 +787,192 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     playbackApplication.positionChanged();
   });
 
+  const executeKeyboardCommand = (command: ReaderKeyboardCommand) => {
+    switch (command) {
+      case "toggle-playback":
+        togglePlayback();
+        break;
+      case "previous-sentence":
+        moveSentence(-1);
+        break;
+      case "next-sentence":
+        moveSentence(1);
+        break;
+      case "previous-chapter":
+        moveChapter(-1);
+        break;
+      case "next-chapter":
+        moveChapter(1);
+        break;
+      case "first-sentence":
+        selectSentence(0);
+        break;
+      case "last-sentence":
+        selectSentence(Math.max(0, reader().sentences.length - 1));
+        break;
+      case "toggle-mute":
+        toggleMute();
+        break;
+      case "increase-volume":
+        updateVolume(Number((audioSettings().volume + 0.05).toFixed(2)));
+        break;
+      case "decrease-volume":
+        updateVolume(Number((audioSettings().volume - 0.05).toFixed(2)));
+        break;
+      case "next-playback-rate":
+        updateAudioSettings({
+          playbackRate: cycleNarrationPlaybackRate(audioSettings().playbackRate, 1)
+        });
+        break;
+      case "previous-playback-rate":
+        updateAudioSettings({
+          playbackRate: cycleNarrationPlaybackRate(audioSettings().playbackRate, -1)
+        });
+        break;
+      case "focus-chapter":
+        document.querySelector<HTMLSelectElement>('[aria-label="Current chapter"]')?.focus();
+        break;
+      case "search-chapter":
+        setInspectorSidebarCollapsed(false);
+        setInspectorTab("search");
+        queueMicrotask(() => readerSearchInput?.focus());
+        break;
+      case "toggle-bookmark":
+        void toggleActiveBookmark();
+        break;
+      case "open-word":
+        setInspectorSidebarCollapsed(false);
+        setInspectorTab("word");
+        break;
+      case "open-notes":
+        setInspectorSidebarCollapsed(false);
+        setInspectorTab("bookmarks");
+        break;
+      case "open-tools":
+        setInspectorSidebarCollapsed(false);
+        setInspectorTab("settings");
+        break;
+      case "save-paragraph-image":
+        if (paragraphImageNotice()?.tone !== "pending") paragraphImageWorkflow.request();
+        break;
+      case "open-library":
+        openAppView("library");
+        break;
+      case "import-book":
+        void libraryApplication.importFromDialog();
+        break;
+      case "focus-library-search":
+        document
+          .querySelector<HTMLInputElement>('.library-workspace [aria-label="Search library"]')
+          ?.focus();
+        break;
+      case "navigate-library-up":
+        focusLibraryBookCard("up");
+        break;
+      case "navigate-library-down":
+        focusLibraryBookCard("down");
+        break;
+      case "navigate-library-left":
+        focusLibraryBookCard("left");
+        break;
+      case "navigate-library-right":
+        focusLibraryBookCard("right");
+        break;
+      case "open-focused-library-book":
+        if (document.activeElement?.hasAttribute("data-library-book-card")) {
+          (document.activeElement as HTMLButtonElement).click();
+        }
+        break;
+      case "select-library-filter-all":
+        setLibraryFilter("all");
+        break;
+      case "select-library-filter-in-progress":
+        setLibraryFilter("in-progress");
+        break;
+      case "select-library-filter-bookmarked":
+        setLibraryFilter("bookmarked");
+        break;
+      case "clear-library":
+        if (libraryQuery().length > 0) setLibraryQuery("");
+        else if (libraryFilter() !== "all") setLibraryFilter("all");
+        break;
+      case "toggle-library-sidebar":
+        setLibrarySidebarCollapsed((collapsed) => !collapsed);
+        break;
+      case "toggle-inspector-sidebar":
+        setInspectorSidebarCollapsed((collapsed) => !collapsed);
+        break;
+      case "open-command-palette":
+        setShortcutReferenceOpen(false);
+        setCommandPaletteOpen(true);
+        break;
+      case "close-command-palette":
+        setCommandPaletteOpen(false);
+        break;
+      case "toggle-fullscreen":
+        void dependencies.appWindow
+          .toggleFullscreen()
+          .catch((error) => reportAppError("window.fullscreen", error));
+        break;
+      case "open-shortcut-reference":
+        setCommandPaletteOpen(false);
+        setShortcutReferenceOpen(true);
+        break;
+      case "close-shortcut-reference":
+        setShortcutReferenceOpen(false);
+        break;
+      case "clear-transient":
+        if (selectedWord() != null) setSelectedWord(null);
+        else if (readerSearchQuery().length > 0) setReaderSearchQuery("");
+        else if (paragraphImageNotice() != null) setParagraphImageNotice(null);
+        else if (narrationNotice() != null) setNarrationNotice(null);
+        break;
+    }
+  };
+
   const handleShortcut = (event: KeyboardEvent) => {
-    if (event.defaultPrevented || isTypingTarget(event.target) || activeView() !== "reader") return;
+    if (event.defaultPrevented) return;
 
-    if (event.key === " ") {
-      event.preventDefault();
-      togglePlayback();
-      return;
-    }
-
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      moveSentence(-1);
-      return;
-    }
-
-    if (event.key === "ArrowRight") {
-      event.preventDefault();
-      moveSentence(1);
-      return;
-    }
-
-    if (event.key.toLocaleLowerCase() === "b") {
-      event.preventDefault();
-      void toggleActiveBookmark();
-      return;
-    }
-
-    if (event.key === "/") {
-      event.preventDefault();
-      setInspectorTab("search");
-      queueMicrotask(() => readerSearchInput?.focus());
-      return;
-    }
-
-    if (event.key === "Escape") {
-      setSelectedWord(null);
-      setReaderSearchQuery("");
-      setNarrationNotice(null);
-    }
+    const command = resolveReaderKeyboardShortcut({
+      key: event.key,
+      surface: activeView(),
+      shiftKey: event.shiftKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      typing: isTypingTarget(event.target),
+      shortcutReferenceOpen: shortcutReferenceOpen(),
+      commandPaletteOpen: commandPaletteOpen()
+    });
+    if (command == null) return;
+    event.preventDefault();
+    executeKeyboardCommand(command);
   };
 
   const togglePlayback = playbackApplication.toggle;
   const moveSentence = playbackApplication.move;
   const selectSentence = playbackApplication.select;
+
+  const moveChapter = (direction: -1 | 1) => {
+    const currentReader = reader();
+    const currentIndex = currentReader.chapters.findIndex(
+      (chapter) => chapter.id === currentReader.chapter.id
+    );
+    const chapter = currentReader.chapters[currentIndex + direction];
+    if (chapter != null) void navigationApplication.openChapter(chapter.id);
+  };
+
+  const focusLibraryBookCard = (direction: LibraryGridNavigationDirection) => {
+    const cards = [...document.querySelectorAll<HTMLButtonElement>("[data-library-book-card]")];
+    const currentIndex = cards.findIndex((card) => card === document.activeElement);
+    const nextIndex = resolveLibraryGridNavigationIndex({
+      currentIndex,
+      direction,
+      columnCount: renderedLibraryGridColumnCount(cards),
+      itemCount: cards.length
+    });
+    cards[nextIndex]?.focus();
+  };
 
   const selectWord = (
     sentence: ReaderSentenceView,
@@ -1124,7 +1281,11 @@ export function ReaderExperience(props: ReaderExperienceProps) {
 
   return (
     <main
-      class="sonelle-shell"
+      classList={{
+        "sonelle-shell": true,
+        "library-sidebar-collapsed": librarySidebarCollapsed(),
+        "inspector-sidebar-collapsed": inspectorSidebarCollapsed()
+      }}
       style={{
         "--library-rail-width": `${libraryRailWidth()}px`,
         "--inspector-rail-width": `${inspectorRailWidth()}px`,
@@ -1142,7 +1303,21 @@ export function ReaderExperience(props: ReaderExperienceProps) {
           reader().paragraphs.length > 0 && paragraphImageNotice()?.tone !== "pending"
         }
         onSaveParagraphImage={paragraphImageWorkflow.request}
+        onOpenShortcutReference={() => setShortcutReferenceOpen(true)}
       />
+      <Show when={shortcutReferenceOpen()}>
+        <ReaderKeyboardShortcutReference onClose={() => setShortcutReferenceOpen(false)} />
+      </Show>
+      <Show when={commandPaletteOpen()}>
+        <ReaderCommandPalette
+          surface={activeView()}
+          onClose={() => setCommandPaletteOpen(false)}
+          onSelect={(command) => {
+            setCommandPaletteOpen(false);
+            queueMicrotask(() => executeKeyboardCommand(command));
+          }}
+        />
+      </Show>
       <LibraryRail model={libraryRailModel} />
       <SidebarResizeHandle
         sidebar="library"

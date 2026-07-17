@@ -21,9 +21,9 @@ import {
   SearchIcon,
   SettingsIcon,
   SpeakerIcon,
-  TrashIcon,
   WordIcon
 } from "./reader-icons";
+import { SavedPassageCard } from "./saved-passage-card";
 
 export interface ReaderInspectorModel {
   tab: InspectorTab;
@@ -36,11 +36,16 @@ export interface ReaderInspectorModel {
 
 export function ReaderInspector(componentProps: { model: ReaderInspectorModel }) {
   const model = componentProps.model;
-  const tabs: Array<{ id: InspectorTab; label: string; icon: () => JSX.Element }> = [
-    { id: "word", label: "Word", icon: WordIcon },
-    { id: "search", label: "Search", icon: SearchIcon },
-    { id: "bookmarks", label: "Notes", icon: BookmarkIcon },
-    { id: "settings", label: "Tools", icon: SettingsIcon }
+  const tabs: Array<{
+    id: InspectorTab;
+    label: string;
+    shortcut: string;
+    icon: () => JSX.Element;
+  }> = [
+    { id: "word", label: "Word", shortcut: "W", icon: WordIcon },
+    { id: "search", label: "Search", shortcut: "/", icon: SearchIcon },
+    { id: "bookmarks", label: "Notes", shortcut: "N", icon: BookmarkIcon },
+    { id: "settings", label: "Tools", shortcut: "T", icon: SettingsIcon }
   ];
 
   return (
@@ -56,6 +61,8 @@ export function ReaderInspector(componentProps: { model: ReaderInspectorModel })
                 type="button"
                 role="tab"
                 aria-selected={model.tab === tab.id}
+                aria-keyshortcuts={tab.shortcut}
+                title={`${tab.label} (${tab.shortcut})`}
                 onClick={() => model.onTabChange(tab.id)}
               >
                 <Icon />
@@ -274,25 +281,11 @@ function BookmarkPanel(componentProps: { model: ReaderBookmarkInspectorModel }) 
         <div class="result-list" role="list">
           <For each={props.bookmarks}>
             {(bookmark) => (
-              <div class="bookmark-row">
-                <button
-                  class="bookmark-card-button"
-                  type="button"
-                  onClick={() => props.onOpenBookmark(bookmark)}
-                >
-                  <span>Sentence {bookmark.sentenceIndex + 1}</span>
-                  <small>{bookmark.text}</small>
-                </button>
-                <button
-                  class="bookmark-delete-button"
-                  type="button"
-                  aria-label={`Delete sentence ${bookmark.sentenceIndex + 1} bookmark`}
-                  onClick={() => props.onDeleteBookmark(bookmark.id)}
-                  title="Delete bookmark"
-                >
-                  <TrashIcon />
-                </button>
-              </div>
+              <SavedPassageCard
+                bookmark={bookmark}
+                onOpen={props.onOpenBookmark}
+                onDelete={props.onDeleteBookmark}
+              />
             )}
           </For>
         </div>

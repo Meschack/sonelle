@@ -31,6 +31,10 @@ actions and projections for the current reader tree. Active-sentence membership 
 selector primitive so a narration step invalidates the previous and next sentence consumers rather
 than every visible sentence.
 
+The window key listener delegates interpretation to `resolveReaderKeyboardShortcut`. The
+composition root only routes semantic commands into existing workflows; it does not duplicate
+playback, navigation, import, or export logic for keyboard input.
+
 ## Domain Events
 
 Library workflows complete their core operation and dispatch the resulting event. `ReaderOpened`

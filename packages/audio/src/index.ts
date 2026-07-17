@@ -16,6 +16,8 @@ interface SerializedAudioSettingsV2 extends AudioSettings {
 
 export const DEFAULT_NARRATION_VOICE_ID = narrationVoiceConfig.defaultVoiceId;
 
+export const NARRATION_PLAYBACK_RATES = [0.75, 0.9, 1, 1.25, 1.5] as const;
+
 export const SUPPORTED_NARRATION_VOICES =
   narrationVoiceConfig.voices satisfies readonly NarrationVoice[];
 
@@ -71,6 +73,25 @@ export function createAudioSettings(input: Partial<AudioSettings> = {}): AudioSe
         ? input.autoAdvance
         : DEFAULT_AUDIO_SETTINGS.autoAdvance
   };
+}
+
+export function cycleNarrationPlaybackRate(currentRate: number, direction: -1 | 1): number {
+  const currentIndex = NARRATION_PLAYBACK_RATES.findIndex(
+    (rate) => Math.abs(rate - currentRate) < Number.EPSILON
+  );
+  if (currentIndex >= 0) {
+    const nextIndex =
+      (currentIndex + direction + NARRATION_PLAYBACK_RATES.length) %
+      NARRATION_PLAYBACK_RATES.length;
+    return NARRATION_PLAYBACK_RATES[nextIndex];
+  }
+
+  const directionalRates =
+    direction > 0 ? NARRATION_PLAYBACK_RATES : [...NARRATION_PLAYBACK_RATES].reverse();
+  return (
+    directionalRates.find((rate) => (direction > 0 ? rate > currentRate : rate < currentRate)) ??
+    directionalRates[0]
+  );
 }
 
 export function serializeAudioSettings(settings: AudioSettings): string {

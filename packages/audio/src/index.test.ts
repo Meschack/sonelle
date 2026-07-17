@@ -3,6 +3,7 @@ import * as audioPublicApi from "./index";
 import {
   activateAudioSettingsForLanguage,
   activateHybridAudioSettingsForLanguage,
+  cycleNarrationPlaybackRate,
   createAudioSettings,
   DEFAULT_AUDIO_SETTINGS,
   DEFAULT_NARRATION_VOICE_ID,
@@ -94,6 +95,13 @@ describe("sentence narration", () => {
     expect(parseAudioSettings('{"schemaVersion":99,"autoAdvance":false}')).toEqual(
       DEFAULT_AUDIO_SETTINGS
     );
+  });
+
+  it("cycles narration rates in both directions and wraps at the ends", () => {
+    expect(cycleNarrationPlaybackRate(0.9, 1)).toBe(1);
+    expect(cycleNarrationPlaybackRate(1, -1)).toBe(0.9);
+    expect(cycleNarrationPlaybackRate(1.5, 1)).toBe(0.75);
+    expect(cycleNarrationPlaybackRate(0.75, -1)).toBe(1.5);
   });
 
   it("keeps hybrid narration voice choices in audio settings", () => {
