@@ -17,7 +17,6 @@ import {
   PiperCompatibilityAdapter,
   type PrefetchingNarrationGateway
 } from "@sonelle/audio/compatibility";
-import type { EventSink } from "@sonelle/storage";
 import {
   createAudioCacheRepository,
   type AudioCacheRepository
@@ -29,6 +28,10 @@ import {
 import { createHtmlAudioPlayer } from "../audio/html-audio-player";
 import { createHtmlManifestNarrationPlayer } from "../audio/html-manifest-narration-player";
 import { reportAppError } from "../platform/error-reporting";
+import {
+  createAppWindowController,
+  type AppWindowController
+} from "../platform/app-window-controller";
 import {
   createEngineInstallationRepository,
   type EngineInstallationRepository,
@@ -48,6 +51,7 @@ import {
 import {
   type BookCatalog,
   type BookDropAdapter,
+  type BookOpenRequestAdapter,
   type BookExporter,
   type BookImporter,
   type BookmarkStore,
@@ -56,13 +60,13 @@ import {
 } from "../library/library-contracts";
 import { createBookCatalog } from "../library/book-catalog";
 import { createBookDropAdapter } from "../library/book-drop-adapter";
+import { createBookOpenRequestAdapter } from "../library/book-open-request-adapter";
 import { createBookExporter } from "../library/book-exporter";
 import { createBookImporter } from "../library/book-importer";
 import { createBookmarkStore } from "../library/bookmark-store";
 import { createLibrarySearch } from "../library/library-search";
 import { createReadingPositionStore } from "../library/reading-position-store";
 import { isTauriRuntime } from "../platform/tauri-runtime";
-import { createDomainEventSink } from "../platform/domain-event-sink";
 import { createSystemFontCatalog, type SystemFontCatalog } from "../platform/system-font-catalog";
 import {
   createParagraphImageExporter,
@@ -93,17 +97,18 @@ export interface ReaderNarrationService {
 }
 
 export interface ReaderExperienceDependencies {
+  appWindow: AppWindowController;
   audioCacheRepository: AudioCacheRepository;
   audioSettingsRepository: AudioSettingsRepository;
   bookCatalog: BookCatalog;
   bookDropAdapter: BookDropAdapter;
+  bookOpenRequestAdapter: BookOpenRequestAdapter;
   bookExporter: BookExporter;
   bookImporter: BookImporter;
   bookmarkStore: BookmarkStore;
   dictionaryRepository: DictionaryRepository;
   engineInstallationRepository: EngineInstallationRepository;
   eventDispatcher: DomainEventDispatcher;
-  eventSink: EventSink;
   fontCatalog: SystemFontCatalog;
   librarySearch: LibrarySearch;
   narration: ReaderNarrationService;
@@ -125,22 +130,24 @@ export function createReaderExperienceDependencies(): ReaderExperienceDependenci
     narrationRepository
   );
   const bookCatalog = createBookCatalog();
-  const eventSink = createDomainEventSink();
   const usesLanguagePacks = narrationSessionRoutingMode === "hybrid-v1";
   const engineInstallations: Partial<Record<NarrationEngineId, EngineInstallationState>> = {};
 
   return {
+    appWindow: createAppWindowController(),
     audioCacheRepository: createAudioCacheRepository(),
     audioSettingsRepository: createAudioSettingsRepository(),
     bookCatalog,
     bookDropAdapter: createBookDropAdapter(),
+    bookOpenRequestAdapter: createBookOpenRequestAdapter({
+      reportError: (error) => void reportAppError("book-open-request.delivery", error)
+    }),
     bookExporter: createBookExporter(),
     bookImporter: createBookImporter(),
     bookmarkStore: createBookmarkStore(),
     dictionaryRepository: createDictionaryRepository(),
     engineInstallationRepository: createEngineInstallationRepository(),
     eventDispatcher,
-    eventSink,
     fontCatalog: createSystemFontCatalog(),
     librarySearch: createLibrarySearch(),
     narration: {
@@ -172,7 +179,6 @@ export function createReaderExperienceDependencies(): ReaderExperienceDependenci
         const prefetchWorkflow = createReaderNarrationPrefetchWorkflow({
           adapter: narrationPreparationAdapter,
           eventDispatcher,
-          eventSink,
           repository: bookCatalog,
           routingMode: narrationSessionRoutingMode,
           engineInstallations: () => engineInstallations
@@ -180,7 +186,6 @@ export function createReaderExperienceDependencies(): ReaderExperienceDependenci
         return createReaderNarrationWorkflow(
           {
             eventDispatcher,
-            eventSink,
             prefetchWorkflow,
             routingMode: narrationSessionRoutingMode,
             session

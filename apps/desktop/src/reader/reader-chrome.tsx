@@ -3,6 +3,7 @@ import type { PlaybackStatus, ReaderProgress } from "@sonelle/reader";
 import type { ReaderChapterNavigationItem } from "./reader-view";
 import {
   BookmarkIcon,
+  HelpIcon,
   NextIcon,
   PauseIcon,
   PlayIcon,
@@ -17,6 +18,7 @@ interface ProductBarProps {
   showParagraphImageAction: boolean;
   canSaveParagraphImage: boolean;
   onSaveParagraphImage: () => void;
+  onOpenShortcutReference: () => void;
 }
 
 export function ProductBar(props: ProductBarProps) {
@@ -28,22 +30,29 @@ export function ProductBar(props: ProductBarProps) {
       </div>
       <span class="product-tagline">Your private reading desk</span>
       <div class="product-status-actions">
-        <span class="product-local-status">
-          <span aria-hidden="true" />
-          Stored locally
-        </span>
         <Show when={props.showParagraphImageAction}>
           <button
-            class="product-paragraph-image-action"
+            class="product-icon-action product-paragraph-image-action"
             type="button"
             aria-label="Save paragraph as image"
-            title="Save paragraph as image"
+            aria-keyshortcuts="Shift+S"
+            title="Save paragraph as image (Shift+S)"
             disabled={!props.canSaveParagraphImage}
             onClick={props.onSaveParagraphImage}
           >
             <ShareIcon />
           </button>
         </Show>
+        <button
+          class="product-icon-action"
+          type="button"
+          aria-label="Keyboard shortcuts"
+          aria-keyshortcuts="?"
+          title="Keyboard shortcuts (?)"
+          onClick={props.onOpenShortcutReference}
+        >
+          <HelpIcon />
+        </button>
       </div>
     </header>
   );
@@ -77,10 +86,22 @@ export function ReaderTopAppBar(props: ReaderTopAppBarProps) {
         </span>
       </div>
       <div class="top-app-actions">
-        <button type="button" aria-label="Open search" onClick={props.onOpenSearch}>
+        <button
+          type="button"
+          aria-label="Open search"
+          aria-keyshortcuts="/ Control+F Meta+F"
+          title="Search chapter (/ or Ctrl/Cmd+F)"
+          onClick={props.onOpenSearch}
+        >
           <SearchIcon />
         </button>
-        <button type="button" aria-label="Open settings" onClick={props.onOpenSettings}>
+        <button
+          type="button"
+          aria-label="Open settings"
+          aria-keyshortcuts="T Control+, Meta+,"
+          title="Tools (T or Ctrl/Cmd+,)"
+          onClick={props.onOpenSettings}
+        >
           <SettingsIcon />
         </button>
       </div>
@@ -106,6 +127,7 @@ export function ChapterNavigator(props: ChapterNavigatorProps) {
         <span>Chapter</span>
         <select
           aria-label="Current chapter"
+          aria-keyshortcuts="C"
           value={props.activeChapterId}
           onChange={(event) => props.onOpenChapter(event.currentTarget.value)}
         >
@@ -176,6 +198,8 @@ export function PlaybackRail(props: PlaybackRailProps) {
             class="icon-button"
             type="button"
             aria-label="Previous sentence"
+            aria-keyshortcuts="ArrowLeft"
+            title="Previous sentence (Left arrow)"
             disabled={props.sentenceCount === 0 || isFirstSentence()}
             onClick={props.onPrevious}
           >
@@ -185,6 +209,8 @@ export function PlaybackRail(props: PlaybackRailProps) {
             class="play"
             type="button"
             aria-label={props.status === "playing" ? "Pause" : "Play"}
+            aria-keyshortcuts="Space"
+            title={`${props.status === "playing" ? "Pause" : "Play"} (Space)`}
             disabled={props.sentenceCount === 0}
             onClick={props.onToggle}
           >
@@ -196,6 +222,8 @@ export function PlaybackRail(props: PlaybackRailProps) {
             class="icon-button"
             type="button"
             aria-label="Next sentence"
+            aria-keyshortcuts="ArrowRight"
+            title="Next sentence (Right arrow)"
             disabled={props.sentenceCount === 0 || isLastSentence()}
             onClick={props.onNext}
           >
@@ -213,6 +241,21 @@ export function PlaybackRail(props: PlaybackRailProps) {
         </div>
       </div>
       <div class="essential-actions">
+        <button
+          classList={{
+            "bookmark-toggle": true,
+            active: props.bookmarked
+          }}
+          type="button"
+          aria-label={props.bookmarked ? "Remove bookmark" : "Bookmark sentence"}
+          aria-pressed={props.bookmarked}
+          disabled={props.sentenceCount === 0}
+          title={props.bookmarked ? "Remove bookmark" : "Bookmark sentence"}
+          aria-keyshortcuts="B"
+          onClick={props.onToggleBookmark}
+        >
+          <BookmarkIcon />
+        </button>
         <div class="volume-control">
           <button
             classList={{ "volume-toggle": true, muted: props.volume === 0 }}
@@ -220,6 +263,7 @@ export function PlaybackRail(props: PlaybackRailProps) {
             aria-label={props.volume === 0 ? "Unmute narration" : "Mute narration"}
             aria-pressed={props.volume === 0}
             title={props.volume === 0 ? "Unmute narration" : "Mute narration"}
+            aria-keyshortcuts="M"
             onClick={props.onToggleMute}
           >
             <SpeakerIcon />
@@ -237,20 +281,6 @@ export function PlaybackRail(props: PlaybackRailProps) {
           />
           <span>{Math.round(props.volume * 100)}%</span>
         </div>
-        <button
-          classList={{
-            "bookmark-toggle": true,
-            active: props.bookmarked
-          }}
-          type="button"
-          aria-label={props.bookmarked ? "Remove bookmark" : "Bookmark sentence"}
-          aria-pressed={props.bookmarked}
-          disabled={props.sentenceCount === 0}
-          title={props.bookmarked ? "Remove bookmark" : "Bookmark sentence"}
-          onClick={props.onToggleBookmark}
-        >
-          <BookmarkIcon />
-        </button>
       </div>
     </footer>
   );

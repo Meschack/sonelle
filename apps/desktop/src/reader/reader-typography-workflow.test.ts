@@ -1,19 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDomainEventDispatcher } from "@sonelle/domain";
+import { createDomainEventDispatcher, type AnyDomainEvent } from "@sonelle/domain";
 import { createReaderPreferences } from "@sonelle/reader";
-import { createMemoryEventJournal } from "@sonelle/storage";
 import { createReaderTypographyWorkflow } from "./reader-typography-workflow";
 
 describe("reader typography workflow", () => {
-  it("turns one change into independent projection, persistence, and journal reactions", async () => {
+  it("turns one change into independent projection and preference persistence reactions", async () => {
     const eventDispatcher = createDomainEventDispatcher();
-    const eventSink = createMemoryEventJournal();
+    const events: AnyDomainEvent[] = [];
+    eventDispatcher.subscribe("ReaderTypographyChanged", (event) => {
+      events.push(event);
+    });
     let preferences = createReaderPreferences();
     const save = vi.fn();
     const workflow = createReaderTypographyWorkflow(
       {
         eventDispatcher,
-        eventSink,
         repository: { save },
         reportEventError: vi.fn()
       },
@@ -34,7 +35,7 @@ describe("reader typography workflow", () => {
       contentFontFamily: "Literata",
       uiFontFamily: "Inter"
     });
-    expect((await eventSink.readAll()).map((event) => event.name)).toEqual([
+    expect(events.map((event) => event.name)).toEqual([
       "ReaderTypographyChanged",
       "ReaderTypographyChanged"
     ]);

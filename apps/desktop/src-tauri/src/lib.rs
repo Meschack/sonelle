@@ -1,5 +1,6 @@
 mod audio;
 mod background_process;
+mod book_open_request;
 mod commands;
 mod epub_import;
 mod error_log;
@@ -35,9 +36,16 @@ fn app_status() -> &'static str {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder =
+        tauri::Builder::default().manage(book_open_request::BookOpenRequestInbox::default());
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        book_open_request::enqueue_cli_arguments(app, args.into_iter().skip(1), cwd.as_ref());
+        book_open_request::focus_main_window(app);
+    }));
+
+    builder
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             error_log::initialize(app.handle()).map_err(io::Error::other)?;
             let store = SonelleStore::open(app.handle()).map_err(|error| {
@@ -46,6 +54,12 @@ pub fn run() {
             })?;
             let migration_store = store.clone();
             app.manage(store);
+            let current_directory = std::env::current_dir().unwrap_or_default();
+            book_open_request::enqueue_cli_arguments(
+                app.handle(),
+                std::env::args().skip(1),
+                &current_directory,
+            );
             tauri::async_runtime::spawn_blocking(move || {
                 if let Err(error) = migrate_legacy_library(&migration_store) {
                     error_log::record_native_error(
@@ -64,6 +78,7 @@ pub fn run() {
             commands::export_book_data,
             commands::get_audio_cache_stats,
             commands::get_narration_engine_status,
+            book_open_request::take_pending_book_open_requests,
             commands::import_epub,
             commands::install_narration_engine,
             commands::list_bookmarks,
@@ -72,8 +87,6 @@ pub fn run() {
             commands::open_book,
             commands::prepare_manifest_narration,
             commands::prepare_sentence_audio,
-            commands::record_domain_event,
-            commands::get_error_log_path,
             commands::report_app_error,
             commands::play_sentence_audio,
             commands::save_bookmark,
@@ -83,6 +96,7 @@ pub fn run() {
             commands::get_narration_voice_status,
             commands::install_narration_voice
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(book_open_request::handle_run_event);
 }

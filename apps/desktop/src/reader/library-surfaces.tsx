@@ -132,6 +132,8 @@ function NavigationRail(componentProps: { model: LibraryNavigationModel }) {
             <div class="library-controls">
               <input
                 aria-label="Search library"
+                aria-keyshortcuts="/ Control+F Meta+F"
+                title="Search library (/ or Ctrl/Cmd+F)"
                 type="search"
                 value={collection.query}
                 placeholder="Search library"
@@ -215,6 +217,8 @@ function NavigationRail(componentProps: { model: LibraryNavigationModel }) {
           class="import-button"
           type="button"
           disabled={collection.importing}
+          aria-keyshortcuts="Control+O Meta+O"
+          title="Add EPUB (Ctrl/Cmd+O)"
           onClick={collection.onImport}
         >
           <PlusIcon />
@@ -298,6 +302,7 @@ function ActiveBookNavigation(props: ActiveBookNavigationProps) {
               }}
               type="button"
               onClick={() => props.onOpenChapter(chapter.id)}
+              title={chapter.title}
             >
               <span>
                 {index() + 1}. {chapter.title}
@@ -361,6 +366,8 @@ export function LibraryWorkspace(componentProps: { model: LibraryWorkspaceModel 
             class="library-add-button"
             type="button"
             disabled={props.importing}
+            aria-keyshortcuts="Control+O Meta+O"
+            title="Add EPUB (Ctrl/Cmd+O)"
             onClick={props.onImport}
           >
             <PlusIcon />
@@ -372,6 +379,8 @@ export function LibraryWorkspace(componentProps: { model: LibraryWorkspaceModel 
           class="library-drop-zone"
           type="button"
           disabled={props.importing}
+          aria-keyshortcuts="Control+O Meta+O"
+          title="Choose an EPUB (Ctrl/Cmd+O)"
           onClick={props.onImport}
         >
           <span class="library-drop-icon" aria-hidden="true">
@@ -396,6 +405,8 @@ export function LibraryWorkspace(componentProps: { model: LibraryWorkspaceModel 
               <SearchIcon />
               <input
                 aria-label="Search library"
+                aria-keyshortcuts="/ Control+F Meta+F"
+                title="Search library (/ or Ctrl/Cmd+F)"
                 type="search"
                 value={props.query}
                 placeholder="Search library"
@@ -406,6 +417,8 @@ export function LibraryWorkspace(componentProps: { model: LibraryWorkspaceModel 
               <button
                 classList={{ active: props.filter === "all" }}
                 type="button"
+                aria-keyshortcuts="1"
+                title="All books (1)"
                 onClick={() => props.onFilterChange("all")}
               >
                 All books
@@ -413,6 +426,8 @@ export function LibraryWorkspace(componentProps: { model: LibraryWorkspaceModel 
               <button
                 classList={{ active: props.filter === "in-progress" }}
                 type="button"
+                aria-keyshortcuts="2"
+                title="In progress (2)"
                 onClick={() => props.onFilterChange("in-progress")}
               >
                 In progress
@@ -420,6 +435,8 @@ export function LibraryWorkspace(componentProps: { model: LibraryWorkspaceModel 
               <button
                 classList={{ active: props.filter === "bookmarked" }}
                 type="button"
+                aria-keyshortcuts="3"
+                title="Bookmarked (3)"
                 onClick={() => props.onFilterChange("bookmarked")}
               >
                 Bookmarked
@@ -442,7 +459,9 @@ export function LibraryWorkspace(componentProps: { model: LibraryWorkspaceModel 
                 {(book) => (
                   <button
                     class="library-book-card"
+                    data-library-book-card={book.id}
                     type="button"
+                    aria-keyshortcuts="Enter"
                     onClick={() => props.onOpenBook(book.id)}
                   >
                     <BookCover

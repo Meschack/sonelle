@@ -1,11 +1,11 @@
 import type { DomainEventDispatcher } from "@sonelle/domain";
 import { libraryImportNotice } from "@sonelle/library";
-import type { EventSink } from "@sonelle/storage";
 import type {
   BookCatalog,
   BookDropAdapter,
   BookDropEvent,
   BookImporter,
+  BookOpenRequestAdapter,
   BookmarkStore,
   LibraryBookmarkDto,
   SaveBookmarkInput
@@ -18,10 +18,10 @@ import { createReaderLibraryWorkflows } from "./reader-library-workflows";
 interface ReaderLibraryApplicationDependencies {
   catalog: BookCatalog;
   drops: BookDropAdapter;
+  openRequests: BookOpenRequestAdapter;
   importer: BookImporter;
   bookmarks: BookmarkStore;
   eventDispatcher: DomainEventDispatcher;
-  eventSink: EventSink;
   friendlyError(error: unknown): string;
   onEventError?(error: unknown): void;
 }
@@ -58,7 +58,6 @@ export function createReaderLibraryApplication(
 ): ReaderLibraryApplication {
   const workflows = createReaderLibraryWorkflows({
     eventDispatcher: dependencies.eventDispatcher,
-    eventSink: dependencies.eventSink,
     catalog: dependencies.catalog,
     importer: dependencies.importer,
     bookmarks: dependencies.bookmarks,
@@ -176,11 +175,20 @@ export function createReaderLibraryApplication(
         ),
         dependencies.eventDispatcher.subscribe("BookmarkDeleted", () => {
           options.projectBookmarkNotice("Bookmark removed.");
+        }),
+        dependencies.eventDispatcher.subscribe("ReaderClosed", async () => {
+          try {
+            await refreshBooks();
+          } catch (error) {
+            reportLibraryError(error);
+          }
         })
       ];
       const stopCore = workflows.start();
       const stopDrops = await dependencies.drops.listen(handleDrop);
+      const stopOpenRequests = await dependencies.openRequests.listen(importBook);
       return () => {
+        stopOpenRequests();
         stopDrops();
         stopCore();
         subscriptions.forEach((unsubscribe) => unsubscribe());

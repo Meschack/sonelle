@@ -10,7 +10,7 @@ import {
   Show,
   untrack
 } from "solid-js";
-import type { AudioSettings } from "@sonelle/audio";
+import { cycleNarrationPlaybackRate, type AudioSettings } from "@sonelle/audio";
 import { createDomainEvent, type AnyDomainEvent } from "@sonelle/domain";
 import {
   bookmarkedBookIds,
@@ -25,6 +25,7 @@ import {
   createReaderProgressIndex,
   createReaderPreferences,
   highlightSentence,
+  readableInkForColor,
   searchReaderSentences
 } from "@sonelle/reader";
 import {
@@ -37,7 +38,7 @@ import {
 } from "@sonelle/learning";
 import type { ReaderTextToken } from "@sonelle/text";
 import { reportNarrationError, toFriendlyNarrationError } from "../audio/narration-repository";
-import { getErrorLogPath, reportAppError, revealErrorLog } from "../platform/error-reporting";
+import { reportAppError } from "../platform/error-reporting";
 import { toFriendlyLibraryError } from "../library/library-errors";
 import type { LibraryBookmarkDto, LibrarySearchResultDto } from "../library/library-contracts";
 import { ChapterNavigator, PlaybackRail, ProductBar, ReaderTopAppBar } from "./reader-chrome";
@@ -83,7 +84,19 @@ import { createReaderNavigationApplication } from "./reader-navigation-applicati
 import { createReaderOpeningWorkflow } from "./reader-opening-workflow";
 import { createReaderPlaybackApplication } from "./reader-playback-application";
 import { createReaderNarrationSettingsWorkflow } from "./reader-narration-settings-workflow";
+import { createReaderAppearanceWorkflow } from "./reader-appearance-workflow";
 import { createReaderTypographyWorkflow } from "./reader-typography-workflow";
+import {
+  resolveReaderKeyboardShortcut,
+  type ReaderKeyboardCommand
+} from "./reader-keyboard-shortcuts";
+import { ReaderKeyboardShortcutReference } from "./reader-keyboard-shortcut-reference";
+import { ReaderCommandPalette } from "./reader-command-palette";
+import {
+  renderedLibraryGridColumnCount,
+  resolveLibraryGridNavigationIndex,
+  type LibraryGridNavigationDirection
+} from "./library-keyboard-navigation";
 import {
   createReaderExperienceDependencies,
   type ReaderExperienceDependencies
@@ -125,7 +138,6 @@ export function ReaderExperience(props: ReaderExperienceProps) {
   const audioSettingsRepository = dependencies.audioSettingsRepository;
   const readerPreferencesRepository = dependencies.readerPreferencesRepository;
   const eventDispatcher = dependencies.eventDispatcher;
-  const eventSink = dependencies.eventSink;
   const readerPreferences = readerPreferencesRepository.load();
   const sampleReader = buildFixtureReaderView();
 
@@ -150,6 +162,12 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     readerPreferences.contentFontFamily
   );
   const [uiFontFamily, setUiFontFamily] = createSignal(readerPreferences.uiFontFamily);
+  const [narrationHighlightColor, setNarrationHighlightColor] = createSignal(
+    readerPreferences.narrationHighlightColor
+  );
+  const [bookmarkHighlightColor, setBookmarkHighlightColor] = createSignal(
+    readerPreferences.bookmarkHighlightColor
+  );
   const [systemFontFamilies, setSystemFontFamilies] = createSignal<readonly string[]>([]);
   const [preferredLibraryRailWidth, setPreferredLibraryRailWidth] = createSignal(
     readerPreferences.libraryRailWidth
@@ -165,13 +183,19 @@ export function ReaderExperience(props: ReaderExperienceProps) {
       inspectorRailWidth: preferredInspectorRailWidth(),
       contentFontSize: readerContentFontSize(),
       contentFontFamily: readerContentFontFamily(),
-      uiFontFamily: uiFontFamily()
+      uiFontFamily: uiFontFamily(),
+      narrationHighlightColor: narrationHighlightColor(),
+      bookmarkHighlightColor: bookmarkHighlightColor()
     });
   const [libraryRailWidth, setLibraryRailWidth] = createSignal(readerPreferences.libraryRailWidth);
   const [inspectorRailWidth, setInspectorRailWidth] = createSignal(
     readerPreferences.inspectorRailWidth
   );
   const [activeView, setActiveView] = createSignal<AppView>("reader");
+  const [shortcutReferenceOpen, setShortcutReferenceOpen] = createSignal(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = createSignal(false);
+  const [librarySidebarCollapsed, setLibrarySidebarCollapsed] = createSignal(false);
+  const [inspectorSidebarCollapsed, setInspectorSidebarCollapsed] = createSignal(false);
   const [libraryRailMode, setLibraryRailMode] = createSignal(
     createLibraryRailMode(sampleReader.book.id)
   );
@@ -211,7 +235,6 @@ export function ReaderExperience(props: ReaderExperienceProps) {
   const [paragraphImageNotice, setParagraphImageNotice] = createSignal<ParagraphImageNotice | null>(
     null
   );
-  const [errorLogPath, setErrorLogPath] = createSignal<string | null>(null);
   const [savedDictionary, setSavedDictionary] = createSignal<SavedDictionary>(
     dictionaryRepository.loadSavedDictionary()
   );
@@ -223,7 +246,6 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     {
       dictionary: dictionaryRepository,
       eventDispatcher,
-      eventSink,
       onEventError: reportEventReactionFailure
     },
     {
@@ -273,7 +295,6 @@ export function ReaderExperience(props: ReaderExperienceProps) {
   const typographyWorkflow = createReaderTypographyWorkflow(
     {
       eventDispatcher,
-      eventSink,
       repository: readerPreferencesRepository,
       reportEventError: reportEventReactionFailure
     },
@@ -284,6 +305,22 @@ export function ReaderExperience(props: ReaderExperienceProps) {
           setReaderContentFontSize(typography.contentFontSize);
           setReaderContentFontFamily(typography.contentFontFamily);
           setUiFontFamily(typography.uiFontFamily);
+        });
+      }
+    }
+  );
+  const appearanceWorkflow = createReaderAppearanceWorkflow(
+    {
+      eventDispatcher,
+      repository: readerPreferencesRepository,
+      reportEventError: reportEventReactionFailure
+    },
+    {
+      currentPreferences: currentReaderPreferences,
+      projectAppearance(appearance) {
+        batch(() => {
+          setNarrationHighlightColor(appearance.narrationHighlightColor);
+          setBookmarkHighlightColor(appearance.bookmarkHighlightColor);
         });
       }
     }
@@ -347,7 +384,6 @@ export function ReaderExperience(props: ReaderExperienceProps) {
   const openingWorkflow = createReaderOpeningWorkflow(
     {
       eventDispatcher,
-      eventSink,
       playback: playbackApplication,
       reportEventError: reportEventReactionFailure
     },
@@ -362,11 +398,13 @@ export function ReaderExperience(props: ReaderExperienceProps) {
       audioCache: dependencies.audioCacheRepository,
       engineInstallations: dependencies.engineInstallationRepository,
       eventDispatcher,
-      eventSink,
       narration: narrationWorkflow,
       offlineLibrary: narrationService.capabilities.offlineLibrary,
       voiceInstallations: dependencies.voiceInstallationRepository,
-      friendlyError: toFriendlyNarrationError
+      friendlyError: toFriendlyNarrationError,
+      reportPreparedAudioError: (error, bookId) => {
+        void reportAppError("prepared-audio.refresh", error, [bookId]);
+      }
     },
     {
       currentBookId: () => reader().book.id,
@@ -420,7 +458,6 @@ export function ReaderExperience(props: ReaderExperienceProps) {
   const bookExportWorkflow = createReaderBookExportWorkflow(
     {
       eventDispatcher,
-      eventSink,
       exporter: dependencies.bookExporter,
       friendlyError: toFriendlyLibraryError,
       onEventError: reportEventReactionFailure
@@ -435,7 +472,6 @@ export function ReaderExperience(props: ReaderExperienceProps) {
   const paragraphImageWorkflow = createReaderParagraphImageWorkflow(
     {
       eventDispatcher,
-      eventSink,
       exporter: dependencies.paragraphImageExporter,
       onError(error) {
         void reportAppError("paragraph-image.export", error, [
@@ -453,10 +489,10 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     {
       catalog: bookCatalog,
       drops: dependencies.bookDropAdapter,
+      openRequests: dependencies.bookOpenRequestAdapter,
       importer: dependencies.bookImporter,
       bookmarks: bookmarkStore,
       eventDispatcher,
-      eventSink,
       friendlyError: toFriendlyLibraryError,
       onEventError: reportEventReactionFailure
     },
@@ -610,12 +646,6 @@ export function ReaderExperience(props: ReaderExperienceProps) {
       setInspectorRailWidth(width);
     });
   };
-  const showErrorLog = () => {
-    const path = errorLogPath();
-    if (path == null) return;
-    void revealErrorLog(path).catch((error) => reportAppError("diagnostics.reveal", error, [path]));
-  };
-
   onMount(() => {
     let disposed = false;
     let stopLibraryApplication: (() => void) | undefined;
@@ -623,6 +653,7 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     const stopNarrationWorkflow = narrationWorkflow.start();
     const stopNarrationSettingsWorkflow = narrationSettingsWorkflow.start();
     const stopTypographyWorkflow = typographyWorkflow.start();
+    const stopAppearanceWorkflow = appearanceWorkflow.start();
     const stopPlaybackApplication = playbackApplication.start();
     const stopOpeningWorkflow = openingWorkflow.start();
     const stopWordInsightWorkflow = wordInsightWorkflow.start();
@@ -650,11 +681,6 @@ export function ReaderExperience(props: ReaderExperienceProps) {
         if (!disposed) setSystemFontFamilies(families);
       })
       .catch(reportEventReactionFailure);
-    void getErrorLogPath()
-      .then((path) => {
-        if (!disposed) setErrorLogPath(path);
-      })
-      .catch((error) => reportAppError("diagnostics.path", error));
     clampSidebarWidthsToViewport();
 
     window.addEventListener("keydown", handleShortcut);
@@ -668,6 +694,7 @@ export function ReaderExperience(props: ReaderExperienceProps) {
       stopNarrationWorkflow();
       stopNarrationSettingsWorkflow();
       stopTypographyWorkflow();
+      stopAppearanceWorkflow();
       stopPlaybackApplication();
       stopOpeningWorkflow();
       stopWordInsightWorkflow();
@@ -699,13 +726,18 @@ export function ReaderExperience(props: ReaderExperienceProps) {
       contentFontFamily: readerContentFontFamily(),
       uiFontFamily: uiFontFamily()
     }));
+    const appearance = untrack(() => ({
+      narrationHighlightColor: narrationHighlightColor(),
+      bookmarkHighlightColor: bookmarkHighlightColor()
+    }));
     readerPreferencesRepository.save(
       createReaderPreferences({
         toolTab: inspectorTab(),
         libraryFilter: libraryFilter(),
         libraryRailWidth: preferredLibraryRailWidth(),
         inspectorRailWidth: preferredInspectorRailWidth(),
-        ...typography
+        ...typography,
+        ...appearance
       })
     );
   });
@@ -755,50 +787,192 @@ export function ReaderExperience(props: ReaderExperienceProps) {
     playbackApplication.positionChanged();
   });
 
+  const executeKeyboardCommand = (command: ReaderKeyboardCommand) => {
+    switch (command) {
+      case "toggle-playback":
+        togglePlayback();
+        break;
+      case "previous-sentence":
+        moveSentence(-1);
+        break;
+      case "next-sentence":
+        moveSentence(1);
+        break;
+      case "previous-chapter":
+        moveChapter(-1);
+        break;
+      case "next-chapter":
+        moveChapter(1);
+        break;
+      case "first-sentence":
+        selectSentence(0);
+        break;
+      case "last-sentence":
+        selectSentence(Math.max(0, reader().sentences.length - 1));
+        break;
+      case "toggle-mute":
+        toggleMute();
+        break;
+      case "increase-volume":
+        updateVolume(Number((audioSettings().volume + 0.05).toFixed(2)));
+        break;
+      case "decrease-volume":
+        updateVolume(Number((audioSettings().volume - 0.05).toFixed(2)));
+        break;
+      case "next-playback-rate":
+        updateAudioSettings({
+          playbackRate: cycleNarrationPlaybackRate(audioSettings().playbackRate, 1)
+        });
+        break;
+      case "previous-playback-rate":
+        updateAudioSettings({
+          playbackRate: cycleNarrationPlaybackRate(audioSettings().playbackRate, -1)
+        });
+        break;
+      case "focus-chapter":
+        document.querySelector<HTMLSelectElement>('[aria-label="Current chapter"]')?.focus();
+        break;
+      case "search-chapter":
+        setInspectorSidebarCollapsed(false);
+        setInspectorTab("search");
+        queueMicrotask(() => readerSearchInput?.focus());
+        break;
+      case "toggle-bookmark":
+        void toggleActiveBookmark();
+        break;
+      case "open-word":
+        setInspectorSidebarCollapsed(false);
+        setInspectorTab("word");
+        break;
+      case "open-notes":
+        setInspectorSidebarCollapsed(false);
+        setInspectorTab("bookmarks");
+        break;
+      case "open-tools":
+        setInspectorSidebarCollapsed(false);
+        setInspectorTab("settings");
+        break;
+      case "save-paragraph-image":
+        if (paragraphImageNotice()?.tone !== "pending") paragraphImageWorkflow.request();
+        break;
+      case "open-library":
+        openAppView("library");
+        break;
+      case "import-book":
+        void libraryApplication.importFromDialog();
+        break;
+      case "focus-library-search":
+        document
+          .querySelector<HTMLInputElement>('.library-workspace [aria-label="Search library"]')
+          ?.focus();
+        break;
+      case "navigate-library-up":
+        focusLibraryBookCard("up");
+        break;
+      case "navigate-library-down":
+        focusLibraryBookCard("down");
+        break;
+      case "navigate-library-left":
+        focusLibraryBookCard("left");
+        break;
+      case "navigate-library-right":
+        focusLibraryBookCard("right");
+        break;
+      case "open-focused-library-book":
+        if (document.activeElement?.hasAttribute("data-library-book-card")) {
+          (document.activeElement as HTMLButtonElement).click();
+        }
+        break;
+      case "select-library-filter-all":
+        setLibraryFilter("all");
+        break;
+      case "select-library-filter-in-progress":
+        setLibraryFilter("in-progress");
+        break;
+      case "select-library-filter-bookmarked":
+        setLibraryFilter("bookmarked");
+        break;
+      case "clear-library":
+        if (libraryQuery().length > 0) setLibraryQuery("");
+        else if (libraryFilter() !== "all") setLibraryFilter("all");
+        break;
+      case "toggle-library-sidebar":
+        setLibrarySidebarCollapsed((collapsed) => !collapsed);
+        break;
+      case "toggle-inspector-sidebar":
+        setInspectorSidebarCollapsed((collapsed) => !collapsed);
+        break;
+      case "open-command-palette":
+        setShortcutReferenceOpen(false);
+        setCommandPaletteOpen(true);
+        break;
+      case "close-command-palette":
+        setCommandPaletteOpen(false);
+        break;
+      case "toggle-fullscreen":
+        void dependencies.appWindow
+          .toggleFullscreen()
+          .catch((error) => reportAppError("window.fullscreen", error));
+        break;
+      case "open-shortcut-reference":
+        setCommandPaletteOpen(false);
+        setShortcutReferenceOpen(true);
+        break;
+      case "close-shortcut-reference":
+        setShortcutReferenceOpen(false);
+        break;
+      case "clear-transient":
+        if (selectedWord() != null) setSelectedWord(null);
+        else if (readerSearchQuery().length > 0) setReaderSearchQuery("");
+        else if (paragraphImageNotice() != null) setParagraphImageNotice(null);
+        else if (narrationNotice() != null) setNarrationNotice(null);
+        break;
+    }
+  };
+
   const handleShortcut = (event: KeyboardEvent) => {
-    if (event.defaultPrevented || isTypingTarget(event.target) || activeView() !== "reader") return;
+    if (event.defaultPrevented) return;
 
-    if (event.key === " ") {
-      event.preventDefault();
-      togglePlayback();
-      return;
-    }
-
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      moveSentence(-1);
-      return;
-    }
-
-    if (event.key === "ArrowRight") {
-      event.preventDefault();
-      moveSentence(1);
-      return;
-    }
-
-    if (event.key.toLocaleLowerCase() === "b") {
-      event.preventDefault();
-      void toggleActiveBookmark();
-      return;
-    }
-
-    if (event.key === "/") {
-      event.preventDefault();
-      setInspectorTab("search");
-      queueMicrotask(() => readerSearchInput?.focus());
-      return;
-    }
-
-    if (event.key === "Escape") {
-      setSelectedWord(null);
-      setReaderSearchQuery("");
-      setNarrationNotice(null);
-    }
+    const command = resolveReaderKeyboardShortcut({
+      key: event.key,
+      surface: activeView(),
+      shiftKey: event.shiftKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      typing: isTypingTarget(event.target),
+      shortcutReferenceOpen: shortcutReferenceOpen(),
+      commandPaletteOpen: commandPaletteOpen()
+    });
+    if (command == null) return;
+    event.preventDefault();
+    executeKeyboardCommand(command);
   };
 
   const togglePlayback = playbackApplication.toggle;
   const moveSentence = playbackApplication.move;
   const selectSentence = playbackApplication.select;
+
+  const moveChapter = (direction: -1 | 1) => {
+    const currentReader = reader();
+    const currentIndex = currentReader.chapters.findIndex(
+      (chapter) => chapter.id === currentReader.chapter.id
+    );
+    const chapter = currentReader.chapters[currentIndex + direction];
+    if (chapter != null) void navigationApplication.openChapter(chapter.id);
+  };
+
+  const focusLibraryBookCard = (direction: LibraryGridNavigationDirection) => {
+    const cards = [...document.querySelectorAll<HTMLButtonElement>("[data-library-book-card]")];
+    const currentIndex = cards.findIndex((card) => card === document.activeElement);
+    const nextIndex = resolveLibraryGridNavigationIndex({
+      currentIndex,
+      direction,
+      columnCount: renderedLibraryGridColumnCount(cards),
+      itemCount: cards.length
+    });
+    cards[nextIndex]?.focus();
+  };
 
   const selectWord = (
     sentence: ReaderSentenceView,
@@ -839,6 +1013,12 @@ export function ReaderExperience(props: ReaderExperienceProps) {
   };
   const updateUiFontFamily = (fontFamily: string | null) => {
     typographyWorkflow.change({ uiFontFamily: fontFamily });
+  };
+  const updateNarrationHighlightColor = (color: string) => {
+    appearanceWorkflow.change({ narrationHighlightColor: color });
+  };
+  const updateBookmarkHighlightColor = (color: string) => {
+    appearanceWorkflow.change({ bookmarkHighlightColor: color });
   };
 
   const openAppView = (view: AppView) => {
@@ -1028,6 +1208,12 @@ export function ReaderExperience(props: ReaderExperienceProps) {
       get uiFontFamily() {
         return uiFontFamily();
       },
+      get narrationHighlightColor() {
+        return narrationHighlightColor();
+      },
+      get bookmarkHighlightColor() {
+        return bookmarkHighlightColor();
+      },
       get systemFontFamilies() {
         return systemFontFamilies();
       },
@@ -1040,9 +1226,6 @@ export function ReaderExperience(props: ReaderExperienceProps) {
       get exportNotice() {
         return exportNotice();
       },
-      get errorLogPath() {
-        return errorLogPath();
-      },
       onAudioSettingsChange: updateAudioSettings,
       onInstallVoice: offlineNarrationApplication.requestSelectedVoice,
       onInstallNarrationProfile: offlineNarrationApplication.requestNarrationProfile,
@@ -1050,11 +1233,12 @@ export function ReaderExperience(props: ReaderExperienceProps) {
       onReaderContentFontSizeChange: updateReaderContentFontSize,
       onReaderContentFontFamilyChange: updateReaderContentFontFamily,
       onUiFontFamilyChange: updateUiFontFamily,
+      onNarrationHighlightColorChange: updateNarrationHighlightColor,
+      onBookmarkHighlightColorChange: updateBookmarkHighlightColor,
       onResetAudioSettings: narrationSettingsWorkflow.reset,
       onRefreshCache: offlineNarrationApplication.refreshPreparedAudio,
       onClearCache: offlineNarrationApplication.clearPreparedAudio,
-      onExportBook: bookExportWorkflow.request,
-      onRevealErrorLog: showErrorLog
+      onExportBook: bookExportWorkflow.request
     }
   } satisfies ReaderInspectorModel;
 
@@ -1091,19 +1275,26 @@ export function ReaderExperience(props: ReaderExperienceProps) {
       setActiveView("library");
       sendLibraryRailEvent({ type: "library-opened" });
     }),
-    eventDispatcher.subscribe("ReaderClosed", stopReaderPlayback),
-    eventDispatcher.subscribe("ReaderClosed", (event) => eventSink.append(event))
+    eventDispatcher.subscribe("ReaderClosed", stopReaderPlayback)
   ];
   onCleanup(() => subscriptions.forEach((unsubscribe) => unsubscribe()));
 
   return (
     <main
-      class="sonelle-shell"
+      classList={{
+        "sonelle-shell": true,
+        "library-sidebar-collapsed": librarySidebarCollapsed(),
+        "inspector-sidebar-collapsed": inspectorSidebarCollapsed()
+      }}
       style={{
         "--library-rail-width": `${libraryRailWidth()}px`,
         "--inspector-rail-width": `${inspectorRailWidth()}px`,
         "--reader-font": cssFontFamilyStack(readerContentFontFamily(), defaultReaderFontStack),
-        "--ui-font": cssFontFamilyStack(uiFontFamily(), defaultUiFontStack)
+        "--ui-font": cssFontFamilyStack(uiFontFamily(), defaultUiFontStack),
+        "--narration-highlight": narrationHighlightColor(),
+        "--narration-highlight-ink": readableInkForColor(narrationHighlightColor()),
+        "--bookmark-highlight": bookmarkHighlightColor(),
+        "--bookmark-highlight-ink": readableInkForColor(bookmarkHighlightColor())
       }}
     >
       <ProductBar
@@ -1112,7 +1303,21 @@ export function ReaderExperience(props: ReaderExperienceProps) {
           reader().paragraphs.length > 0 && paragraphImageNotice()?.tone !== "pending"
         }
         onSaveParagraphImage={paragraphImageWorkflow.request}
+        onOpenShortcutReference={() => setShortcutReferenceOpen(true)}
       />
+      <Show when={shortcutReferenceOpen()}>
+        <ReaderKeyboardShortcutReference onClose={() => setShortcutReferenceOpen(false)} />
+      </Show>
+      <Show when={commandPaletteOpen()}>
+        <ReaderCommandPalette
+          surface={activeView()}
+          onClose={() => setCommandPaletteOpen(false)}
+          onSelect={(command) => {
+            setCommandPaletteOpen(false);
+            queueMicrotask(() => executeKeyboardCommand(command));
+          }}
+        />
+      </Show>
       <LibraryRail model={libraryRailModel} />
       <SidebarResizeHandle
         sidebar="library"
